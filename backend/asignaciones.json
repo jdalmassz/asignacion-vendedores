@@ -1,0 +1,82 @@
+[
+  {
+    "id": 1,
+    "vendedor": "ALEXANDER PADRAN HECAVARRAA",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-01"
+  },
+  {
+    "id": 2,
+    "vendedor": "ALEXANDER PADRON HECAVARRIA",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-01"
+  },
+  {
+    "id": 3,
+    "vendedor": "ALFREDO HERNANDEZ OLIVA",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-02"
+  },
+  {
+    "id": 4,
+    "vendedor": "ANDY JESUS ALMANZA LOPEZ",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-01"
+  },
+  {
+    "id": 5,
+    "vendedor": "DEYANIRA ZALDIVAR LUGO",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-02"
+  },
+  {
+    "id": 6,
+    "vendedor": "ERNESTO RODRIGUEZ CASTELLANOS",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-01"
+  },
+  {
+    "id": 7,
+    "vendedor": "GEORLIS MICHEL CARDENAS MORA",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-03"
+  },
+  {
+    "id": 8,
+    "vendedor": "IRADIEL CISNEROS",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-01"
+  },
+  {
+    "id": 9,
+    "vendedor": "JEAN MICHEL RAMOS CUZA",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-02"
+  },
+  {
+    "id": 10,
+    "vendedor": "MAYLEN REMON DIAZ",
+    "producto_id": 1697,
+    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
+    "cantidad": 200,
+    "fecha": "2026-09-03"
+  }
+]
