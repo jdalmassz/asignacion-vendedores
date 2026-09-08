@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mv fontend *)",
-      "Bash(mv frontend/backend.exe backend/backend.exe)"
-    ]
-  }
-}
