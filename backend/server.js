@@ -9,6 +9,12 @@ app.use(express.json());
 
 const ASIGNACIONES_FILE = 'asignaciones.json';
 
+// Procovar API config
+const API_BASE = 'https://pedidos.procovar.cloud/api';
+const API_KEY = 'PROCOVAR_API_KEY_ENV';
+const SUCURSAL_ID = 'PROCOVAR_SUCURSAL_ID_ENV';
+
+// MySQL config (productos y almacen)
 const dbConfig = {
   host: 'DB_HOST_ENV',
   user: 'root',
@@ -38,65 +44,155 @@ function normalizeVendedorName(note) {
   const idx = note.indexOf('V-');
   if (idx === -1) return null;
   let name = note.substring(idx + 2).split(';')[0].trim();
-  // Replace Ñ/ñ with N/n first
   name = name.replace(/Ñ/gi, 'N');
-  name = name.replace(/ñ/gi, 'n');
-  // Remove remaining accents via NFD decomposition
-  name = name.normalize('NFD').replace(/[̀-ͯ]/g, '');
-  // Fix common OCR typos / variations
+  name = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   name = name.replace(/PADRAN/gi, 'PADRON');
   name = name.replace(/HECAVARRAA/gi, 'HECAVARRIA');
-  // Keep only letters and spaces
   name = name.replace(/[^A-Za-z\s]/g, '').toUpperCase();
   return name.replace(/\s+/g, ' ').trim();
 }
 
-// GET /api/vendedores
+function normProdTokens(s) {
+  if (!s) return [];
+  return s
+    .toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/0\.5|0,5/g, ' 500 ')
+    .replace(/1\.5|1,5/g, ' 1500 ')
+    .replace(/[^A-Z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length > 1 && !/^(CERVEZA|MALTA|BOTELLA|BLISTER|REGIO|GUAJIRA)$/.test(t));
+}
+
+async function loadGoods() {
+  const conn = await getConnection();
+  const [rows] = await conn.query(`SELECT ID, Code, Name FROM goods WHERE Deleted = 0`);
+  await conn.end();
+  return rows;
+}
+
+function findGoodIDForAsign(a, goods) {
+  const pid = String(a.producto_id || '').trim();
+  const byCode = goods.find(g => String(g.Code || '').trim() === pid);
+  if (byCode) return byCode.ID;
+
+  const aTokens = normProdTokens(a.producto_nombre + ' ' + a.producto_id);
+  let best = null, bestScore = 0;
+  for (const g of goods) {
+    const gTokens = new Set(normProdTokens(g.Name));
+    let score = 0;
+    for (const t of aTokens) if (gTokens.has(t)) score++;
+    if (score > bestScore) { bestScore = score; best = g.ID; }
+  }
+  return bestScore >= 2 ? best : null;
+}
+
+async function apiGet(path) {
+  const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}sucursalId=${SUCURSAL_ID}`;
+  const resp = await fetch(url, {
+    headers: {
+      'x-api-key': API_KEY,
+      'Content-Type': 'application/json'
+    }
+  });
+  if (!resp.ok) throw new Error(`API error ${resp.status}: ${await resp.text()}`);
+  return resp.json();
+}
+
+async function fetchAllOrders(desde, hasta) {
+  const allOrders = [];
+  let page = 1;
+  const limit = 100;
+  let totalPages = 1;
+
+  while (page <= totalPages) {
+    let path = `/orders?page=${page}&limit=${limit}`;
+    if (desde) path += `&desde=${desde}`;
+    if (hasta) path += `&hasta=${hasta}`;
+
+    const result = await apiGet(path);
+
+    if (Array.isArray(result)) {
+      allOrders.push(...result);
+      break;
+    }
+
+    if (result.data) {
+      allOrders.push(...result.data);
+      if (result.pagination) {
+        totalPages = result.pagination.totalPages;
+      }
+    } else {
+      break;
+    }
+
+    page++;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  // Filtro extra por fecha (la API devuelve pedidos fuera de rango en las últimas páginas)
+  const desdeTs = desde ? new Date(desde + 'T00:00:00').getTime() : null;
+  const hastaTs = hasta ? new Date(hasta + 'T23:59:59').getTime() : null;
+  const filtrados = allOrders.filter(o => {
+    if (!o.fecha) return true;
+    const ts = new Date(o.fecha).getTime();
+    if (desdeTs && ts < desdeTs) return false;
+    if (hastaTs && ts > hastaTs) return false;
+    return true;
+  });
+
+  // Deduplicar por id (la paginación repite pedidos en páginas distintas)
+  const vistos = new Set();
+  return filtrados.filter(o => {
+    if (!o.id) return true;
+    if (vistos.has(o.id)) return false;
+    vistos.add(o.id);
+    return true;
+  });
+}
+
+// GET /api/vendedores — desde Procovar API
 app.get('/api/vendedores', async (req, res) => {
   try {
-    const conn = await getConnection();
-    // Fetch all Notes without DISTINCT, deduplicate in JS using normalized name
-    const [rows] = await conn.query(`
-      SELECT Note FROM operations
-      WHERE Note LIKE '%V-%' AND Note IS NOT NULL AND Note != ''
-    `);
-    await conn.end();
-
-    const seen = {};
-    const unique = [];
-    for (const row of rows) {
-      const name = normalizeVendedorName(row.Note);
-      console.error('Processing:', JSON.stringify(row.Note), '->', name, 'seen?', seen[name]);
-      if (name && !seen[name]) {
-        seen[name] = true;
-        unique.push(name);
-      }
-    }
-    console.error('Final unique:', unique);
-    unique.sort();
-    res.json({ vendedores: unique.slice(0, 10) });
+    const vendedores = await apiGet('/vendedores');
+    const activos = vendedores.filter(v => v.activo);
+    activos.sort((a, b) => a.nombre.localeCompare(b.nombre));
+    res.json({ vendedores: activos.map(v => ({
+      id: v.id,
+      nombre: v.nombre,
+      codigo: v.codigo
+    }))});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/productos
+// GET /api/productos — productos únicos de Procovar API con stock
 app.get('/api/productos', async (req, res) => {
   try {
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
-      SELECT ID, Code, Name, Measure1, Measure2 FROM goods
-      WHERE (Name LIKE '%cerveza%' OR Name LIKE '%malta%' OR Name LIKE '%CERVEZA%' OR Name LIKE '%MALTA%')
-      AND Deleted = 0 ORDER BY Name
-    `);
-    await conn.end();
-
-    const productos = rows.map(p => ({
-      id: p.ID,
-      code: p.Code,
-      name: p.Name,
-      medida: p.Measure1 || p.Measure2 || 'U'
-    }));
+    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+    const seen = {};
+    for (const order of orders) {
+      if (!order.items) continue;
+      for (const item of order.items) {
+        const name = item.producto || item.codigo;
+        if (name && !seen[name]) {
+          seen[name] = {
+            id: item.codigo || name,
+            code: item.codigo || '',
+            name: name,
+            precio: item.precioUnidad || 0,
+            stock: item.stock || 0
+          };
+        }
+        if (name && item.stock > (seen[name]?.stock || 0)) {
+          seen[name].stock = item.stock;
+        }
+      }
+    }
+    const productos = Object.values(seen)
+      .filter(p => p.stock > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
     res.json({ productos });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -141,7 +237,7 @@ app.delete('/api/asignaciones/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// GET /api/ventas
+// GET /api/ventas — desde MariaDB (operaciones despachadas Sign=-1)
 app.get('/api/ventas', async (req, res) => {
   try {
     const conn = await getConnection();
@@ -151,7 +247,6 @@ app.get('/api/ventas', async (req, res) => {
       LEFT JOIN goods g ON o.GoodID = g.ID
       WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
       AND o.Sign = -1 AND Note LIKE '%V-%'
-      AND (g.Name LIKE '%cerveza%' OR g.Name LIKE '%malta%' OR g.Name LIKE '%CERVEZA%' OR g.Name LIKE '%MALTA%')
       GROUP BY o.Note, o.GoodID, o.Date, g.Name, g.PriceOut1, g.Measure1, g.Measure2
     `);
     await conn.end();
@@ -168,7 +263,6 @@ app.get('/api/ventas', async (req, res) => {
         producto_id: row.GoodID,
         producto_nombre: row.Name,
         precio: row.PriceOut1 || 0,
-        medida: row.Measure1 || row.Measure2 || 'U',
         cantidad: row.TotalVendido || 0,
         total: (row.PriceOut1 || 0) * (row.TotalVendido || 0),
         fecha: fechaStr
@@ -180,36 +274,35 @@ app.get('/api/ventas', async (req, res) => {
   }
 });
 
-// GET /api/resumen
+// GET /api/resumen — asignaciones vs vendido real (MariaDB)
 app.get('/api/resumen', async (req, res) => {
   try {
     const asignaciones = loadAsignaciones();
     const asignSep = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
 
-    // Group by vendedor + producto_id (normalize vendedor name)
+    // Group assignments by vendedor + producto (normalizar vendedor + mapear a GoodID)
+    const goods = await loadGoods();
     const asignMap = {};
     const asignInfo = {};
     for (const a of asignSep) {
-      // normalizeVendedorName expects full Note with "V-", so prepend it
       const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
-      const key = `${vendedorNorm}|${a.producto_id}`;
+      const goodId = findGoodIDForAsign(a, goods);
+      if (!goodId) continue;
+      const key = `${vendedorNorm}|${goodId}`;
       if (!asignMap[key]) {
         asignMap[key] = 0;
-        asignInfo[key] = { ...a, vendedor: vendedorNorm };
+        asignInfo[key] = { ...a, vendedor: vendedorNorm, goodId };
       }
       asignMap[key] += a.cantidad;
     }
 
-    // Get sales
+    // Ventas reales desde MariaDB (despachadas Sign=-1) en el mes
     const conn = await getConnection();
     const [rows] = await conn.query(`
-      SELECT o.Note, o.GoodID, g.Name, SUM(o.Qtty) as TotalVendido
+      SELECT o.Note, o.GoodID, o.Date, o.Qtty
       FROM operations o
-      LEFT JOIN goods g ON o.GoodID = g.ID
       WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
       AND o.Sign = -1 AND Note LIKE '%V-%'
-      AND (g.Name LIKE '%cerveza%' OR g.Name LIKE '%malta%' OR g.Name LIKE '%CERVEZA%' OR g.Name LIKE '%MALTA%')
-      GROUP BY o.Note, o.GoodID, g.Name
     `);
     await conn.end();
 
@@ -218,21 +311,24 @@ app.get('/api/resumen', async (req, res) => {
       const vendedor = normalizeVendedorName(row.Note);
       if (!vendedor) continue;
       const key = `${vendedor}|${row.GoodID}`;
-      ventasMap[key] = (ventasMap[key] || 0) + (row.TotalVendido || 0);
+      if (!asignInfo[key]) continue;
+      ventasMap[key] = (ventasMap[key] || 0) + (row.Qtty || 0);
     }
 
-    // Build resumen
+    // Build resumen (vendido topeado al asignado, pendiente nunca negativo)
     const resumen = [];
     for (const key in asignMap) {
       const [vendedor, prodId] = key.split('|');
       const info = asignInfo[key];
-      const vendido = ventasMap[key] || 0;
+      const vendido = Math.min(ventasMap[key] || 0, asignMap[key]);
       resumen.push({
         vendedor,
-        producto_id: parseInt(prodId),
+        producto_id: info.producto_id,
+        good_id: info.goodId,
         producto_nombre: info.producto_nombre,
         asignado: asignMap[key],
         vendido,
+        bruto: ventasMap[key] || 0,
         pendiente: asignMap[key] - vendido
       });
     }
@@ -242,28 +338,39 @@ app.get('/api/resumen', async (req, res) => {
   }
 });
 
-// GET /api/almacen
+// GET /api/almacen — desde Procovar API (stock de pedidos recientes)
 app.get('/api/almacen', async (req, res) => {
   try {
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
-      SELECT s.GoodID, g.Name, g.PriceOut1, g.Measure1, g.Measure2, SUM(s.Qtty) as Stock
-      FROM store s
-      LEFT JOIN goods g ON s.GoodID = g.ID
-      WHERE (g.Name LIKE '%cerveza%' OR g.Name LIKE '%malta%' OR g.Name LIKE '%CERVEZA%' OR g.Name LIKE '%MALTA%')
-      GROUP BY s.GoodID, g.Name, g.PriceOut1, g.Measure1, g.Measure2
-      HAVING Stock > 0 ORDER BY g.Name
-    `);
-    await conn.end();
-
-    const productos = rows.map(r => ({
-      producto_id: r.GoodID,
-      nombre: r.Name,
-      precio: r.PriceOut1 || 0,
-      medida: r.Measure1 || r.Measure2 || 'U',
-      stock: r.Stock
-    }));
+    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+    const seen = {};
+    for (const order of orders) {
+      if (!order.items) continue;
+      for (const item of order.items) {
+        const name = item.producto || item.codigo;
+        if (name && (!seen[name] || item.stock > seen[name].stock)) {
+          seen[name] = {
+            producto_id: item.codigo || name,
+            nombre: name,
+            precio: item.precioUnidad || 0,
+            stock: item.stock || 0
+          };
+        }
+      }
+    }
+    const productos = Object.values(seen)
+      .filter(p => p.stock > 0)
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
     res.json({ productos });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/clientes-por-vendedor — desde Procovar API
+app.get('/api/clientes-por-vendedor', async (req, res) => {
+  try {
+    const data = await apiGet('/clientes/por-vendedor');
+    res.json({ vendedores: data });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

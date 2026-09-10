@@ -18,7 +18,7 @@ const error = ref(null)
 const vendedorSeleccionado = ref('')
 
 // Filtro de fecha para ventas
-const filtroModo = ref('mes') // 'hoy', 'mes', 'personalizado'
+const filtroPreset = ref('mes') // 'hoy', 'mes', 'rango'
 const seccionActiva = ref('resumen') // 'resumen', 'asignaciones'
 const filtroFechaDesde = ref('')
 const filtroFechaHasta = ref('')
@@ -27,17 +27,115 @@ const fechaHoy = new Date().toISOString().split('T')[0]
 
 // Formulario de nueva asignación
 const nuevaAsignacion = ref({
-  vendedor: '',
   producto: '',
   cantidad: 0,
   fecha: new Date().toISOString().split('T')[0]
 })
+const vendedoresSeleccionados = ref([])
 const showForm = ref(false)
+const showCalendar = ref(false)
+const showCalRango = ref(false)
+const calObjetivo = ref('desde')
+const calMonth = ref(new Date().getMonth())
+const calYear = ref(new Date().getFullYear())
+const rangoTmpDesde = ref('')
+const rangoTmpHasta = ref('')
+
+function toggleTodosVendedores() {
+  if (vendedoresSeleccionados.value.length === vendedores.value.length) {
+    vendedoresSeleccionados.value = []
+  } else {
+    vendedoresSeleccionados.value = [...vendedores.value]
+  }
+}
+
+const calMonthName = computed(() => {
+  const names = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+  return names[calMonth.value]
+})
+
+const calDays = computed(() => {
+  const first = new Date(calYear.value, calMonth.value, 1).getDay()
+  const last = new Date(calYear.value, calMonth.value + 1, 0).getDate()
+  const days = []
+  for (let i = 0; i < first; i++) days.push(null)
+  for (let i = 1; i <= last; i++) days.push(i)
+  return days
+})
+
+function selectCalendarDay(day) {
+  if (!day) return
+  const m = String(calMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  nuevaAsignacion.value.fecha = `${calYear.value}-${m}-${d}`
+  showCalendar.value = false
+}
+
+function abrirCalRango() {
+  if (!showCalRango.value) {
+    if (filtroFechaDesde.value) {
+      rangoTmpDesde.value = filtroFechaDesde.value
+      const f = new Date(filtroFechaDesde.value)
+      calYear.value = f.getFullYear()
+      calMonth.value = f.getMonth()
+      calObjetivo.value = filtroFechaHasta.value ? 'desde' : 'hasta'
+    } else {
+      rangoTmpDesde.value = ''
+      calObjetivo.value = 'desde'
+    }
+    rangoTmpHasta.value = filtroFechaHasta.value
+    if (!rangoTmpDesde.value && !rangoTmpHasta.value) calObjetivo.value = 'desde'
+  }
+  showCalRango.value = !showCalRango.value
+}
+
+function seleccionarDiaRango(day) {
+  if (!day) return
+  const m = String(calMonth.value + 1).padStart(2, '0')
+  const d = String(day).padStart(2, '0')
+  const fecha = `${calYear.value}-${m}-${d}`
+  if (calObjetivo.value === 'desde') {
+    rangoTmpDesde.value = fecha
+    calObjetivo.value = 'hasta'
+  } else {
+    let desde = rangoTmpDesde.value
+    let hasta = fecha
+    if (desde > fecha) {
+      desde = fecha
+      hasta = rangoTmpDesde.value
+    }
+    filtroFechaDesde.value = desde
+    filtroFechaHasta.value = hasta
+    showCalRango.value = false
+  }
+}
+
+function esDiaEnRango(fecha) {
+  if (!rangoTmpDesde.value && !rangoTmpHasta.value) return false
+  if (!rangoTmpHasta.value) return fecha === rangoTmpDesde.value
+  return fecha >= rangoTmpDesde.value && fecha <= rangoTmpHasta.value
+}
+
+function prevMonth() {
+  if (calMonth.value === 0) { calMonth.value = 11; calYear.value-- }
+  else calMonth.value--
+}
+
+function nextMonth() {
+  if (calMonth.value === 11) { calMonth.value = 0; calYear.value++ }
+  else calMonth.value++
+}
 
 // Mes actual para filtrar
 const mesActual = 'Septiembre 2026'
 
 onMounted(async () => {
+  document.addEventListener('click', (e) => {
+    if ((showCalendar.value || showCalRango.value) && !e.target.closest('.calendar-group')) {
+      showCalendar.value = false
+      showCalRango.value = false
+    }
+  })
   await cargarDatos()
 })
 
@@ -82,7 +180,7 @@ async function cargarAsignaciones() {
 async function cargarAlmacen() {
   try {
     const res = await axios.get(`${API_URL}/almacen`)
-    almacen.value = res.data.productos
+    almacen.value = [...res.data.productos].sort((a, b) => (a.producto_nombre || a.nombre || '').localeCompare(b.producto_nombre || b.nombre || ''))
   } catch (e) {
     console.error('Error al cargar almacén:', e)
   }
@@ -107,8 +205,8 @@ async function cargarResumen() {
 }
 
 async function crearAsignacion() {
-  if (!nuevaAsignacion.value.vendedor || !nuevaAsignacion.value.producto || !nuevaAsignacion.value.cantidad) {
-    alert('Por favor complete todos los campos')
+  if (vendedoresSeleccionados.value.length === 0 || !nuevaAsignacion.value.producto || !nuevaAsignacion.value.cantidad) {
+    alert('Por favor seleccione al menos un vendedor, un producto y una cantidad')
     return
   }
 
@@ -116,15 +214,18 @@ async function crearAsignacion() {
   if (!producto) return
 
   try {
-    await axios.post(`${API_URL}/asignaciones`, {
-      vendedor: nuevaAsignacion.value.vendedor,
-      producto_id: parseInt(nuevaAsignacion.value.producto),
-      producto_nombre: producto.name,
-      cantidad: parseFloat(nuevaAsignacion.value.cantidad),
-      fecha: nuevaAsignacion.value.fecha
-    })
+    for (const vendedor of vendedoresSeleccionados.value) {
+      await axios.post(`${API_URL}/asignaciones`, {
+        vendedor,
+        producto_id: nuevaAsignacion.value.producto,
+        producto_nombre: producto.name,
+        cantidad: parseFloat(nuevaAsignacion.value.cantidad),
+        fecha: nuevaAsignacion.value.fecha
+      })
+    }
 
-    nuevaAsignacion.value = { vendedor: '', producto: '', cantidad: 0, fecha: new Date().toISOString().split('T')[0] }
+    vendedoresSeleccionados.value = []
+    nuevaAsignacion.value = { producto: '', cantidad: 0, fecha: new Date().toISOString().split('T')[0] }
     showForm.value = false
 
     await cargarResumen()
@@ -164,6 +265,11 @@ const resumenPorVendedor = computed(() => {
     }
   }
   return Object.values(grouped)
+    .sort((a, b) => a.vendedor.localeCompare(b.vendedor))
+    .map(g => ({
+      ...g,
+      productos: Object.values(g.productos).sort((a, b) => (a.producto_nombre || '').localeCompare(b.producto_nombre || ''))
+    }))
 })
 
 // Agrupar ventas por vendedor
@@ -176,17 +282,17 @@ const ventasPorVendedor = computed(() => {
         productos: {}
       }
     }
-    if (!grouped[item.vendedor].productos[item.producto_id]) {
-      grouped[item.vendedor].productos[item.producto_id] = {
+    const key = item.producto_nombre
+    if (!grouped[item.vendedor].productos[key]) {
+      grouped[item.vendedor].productos[key] = {
         producto_nombre: item.producto_nombre,
-        medida: item.medida || 'U',
         precio: item.precio || 0,
         vendido: 0,
         total: 0
       }
     }
-    grouped[item.vendedor].productos[item.producto_id].vendido += item.cantidad || item.total_vendido
-    grouped[item.vendedor].productos[item.producto_id].total += item.total
+    grouped[item.vendedor].productos[key].vendido += item.cantidad
+    grouped[item.vendedor].productos[key].total += item.total
   }
   return Object.values(grouped)
 })
@@ -225,13 +331,10 @@ const ventasFiltradas = computed(() => {
 
 // Ventas filtradas por fecha
 const ventasFiltradasPorFecha = computed(() => {
-  if (filtroModo.value === 'hoy') {
+  if (filtroPreset.value === 'hoy') {
     return ventas.value.filter(v => v.fecha === fechaHoy)
   }
-  if (filtroModo.value === 'mes') {
-    return ventas.value.filter(v => v.fecha && v.fecha.startsWith('2026-09'))
-  }
-  if (filtroModo.value === 'personalizado') {
+  if (filtroPreset.value === 'rango') {
     if (!filtroFechaDesde.value && !filtroFechaHasta.value) return ventas.value
     return ventas.value.filter(v => {
       if (!v.fecha) return false
@@ -244,7 +347,7 @@ const ventasFiltradasPorFecha = computed(() => {
       return true
     })
   }
-  return ventas.value
+  return ventas.value.filter(v => v.fecha && v.fecha.startsWith('2026-09'))
 })
 
 // Agrupar ventas por vendedor filtradas por fecha
@@ -257,29 +360,75 @@ const ventasPorVendedorFiltrado = computed(() => {
         productos: {}
       }
     }
-    if (!grouped[item.vendedor].productos[item.producto_id]) {
-      grouped[item.vendedor].productos[item.producto_id] = {
+    const key = item.producto_nombre
+    if (!grouped[item.vendedor].productos[key]) {
+      grouped[item.vendedor].productos[key] = {
         producto_nombre: item.producto_nombre,
-        medida: item.medida || 'U',
         precio: item.precio || 0,
         vendido: 0,
         total: 0
       }
     }
-    grouped[item.vendedor].productos[item.producto_id].vendido += item.cantidad || item.total_vendido
-    grouped[item.vendedor].productos[item.producto_id].total += item.total
+    grouped[item.vendedor].productos[key].vendido += item.cantidad
+    grouped[item.vendedor].productos[key].total += item.total
   }
   return Object.values(grouped)
+    .sort((a, b) => a.vendedor.localeCompare(b.vendedor))
+    .map(g => ({
+      ...g,
+      productos: Object.values(g.productos).sort((a, b) => a.producto_nombre.localeCompare(b.producto_nombre))
+    }))
+})
+
+// Matriz ventas "Todos": productos por fila, vendedores por columna
+const matrizVentasTodos = computed(() => {
+  const vendedores = ventasPorVendedorFiltrado.value
+  const productosMap = {}
+  for (const v of vendedores) {
+    for (const p of v.productos) {
+      if (!productosMap[p.producto_nombre]) {
+        productosMap[p.producto_nombre] = {
+          producto_nombre: p.producto_nombre,
+          porVendedor: {},
+          cantidadTotal: 0,
+          totalTotal: 0
+        }
+      }
+      productosMap[p.producto_nombre].porVendedor[v.vendedor] = { vendido: p.vendido, total: p.total }
+      productosMap[p.producto_nombre].cantidadTotal += p.vendido
+      productosMap[p.producto_nombre].totalTotal += p.total
+    }
+  }
+  return {
+    vendedores: vendedores.map(v => v.vendedor),
+    filas: Object.values(productosMap).sort((a, b) => a.producto_nombre.localeCompare(b.producto_nombre))
+  }
 })
 
 // Total de ventas filtradas
 const totalVentasFiltrado = computed(() => {
   let total = 0
-  for (const item of ventasFiltradasPorFecha.value) {
-    total += item.total || 0
+  for (const item of ventasPorVendedorFiltrado.value) {
+    if (vendedorSeleccionado.value && item.vendedor !== vendedorSeleccionado.value) continue
+    total += Object.values(item.productos).reduce((s, p) => s + p.total, 0)
   }
   return total
 })
+
+const totalVentasUnidades = computed(() => {
+  let total = 0
+  for (const item of ventasPorVendedorFiltrado.value) {
+    if (vendedorSeleccionado.value && item.vendedor !== vendedorSeleccionado.value) continue
+    total += Object.values(item.productos).reduce((s, p) => s + p.vendido, 0)
+  }
+  return total
+})
+
+function totalPorVendedorEnMatriz(vendedor) {
+  const v = ventasPorVendedorFiltrado.value.find(x => x.vendedor === vendedor)
+  if (!v) return 0
+  return Object.values(v.productos).reduce((s, p) => s + p.vendido, 0)
+}
 
 // Total general almacén
 const totalAlmacen = computed(() => {
@@ -290,19 +439,9 @@ const totalAlmacen = computed(() => {
   return total
 })
 
-// Unidad del producto seleccionado en el formulario
-const unidadProducto = computed(() => {
-  if (!nuevaAsignacion.value.producto) return ''
-  const prod = productos.value.find(p => p.id == nuevaAsignacion.value.producto)
-  return prod ? prod.medida : ''
-})
-
-// Filtrar solo cerveza y malta (asignables a vendedores)
+// Filtrar solo productos (ya vienen de Procovar con ventas reales)
 const productosFiltrados = computed(() => {
-  const term = (p.nombre || '').toUpperCase()
-  return productos.value.filter(p =>
-    term.includes('CERVEZA') || term.includes('MALTA')
-  )
+  return [...productos.value].sort((a, b) => a.name.localeCompare(b.name))
 })
 </script>
 
@@ -348,29 +487,59 @@ const productosFiltrados = computed(() => {
           <form @submit.prevent="crearAsignacion">
             <div class="form-row">
               <div class="form-group">
-                <label>Vendedor</label>
-                <select v-model="nuevaAsignacion.vendedor" required>
-                  <option value="">-- Seleccionar --</option>
-                  <option v-for="v in vendedores" :key="v" :value="v">{{ v }}</option>
-                </select>
-              </div>
-              <div class="form-group">
                 <label>Producto</label>
                 <select v-model="nuevaAsignacion.producto" required>
                   <option value="">-- Seleccionar --</option>
-                  <option v-for="p in productosFiltrados" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  <option v-for="p in productosFiltrados" :key="p.id" :value="p.id">{{ p.name }} (stock: {{ p.stock }})</option>
                 </select>
               </div>
               <div class="form-group">
                 <label>Cantidad</label>
                 <input type="number" v-model="nuevaAsignacion.cantidad" min="1" placeholder="0" required />
               </div>
-              <div class="form-group">
+              <div class="form-group calendar-group">
                 <label>Fecha</label>
-                <input type="date" v-model="nuevaAsignacion.fecha" required />
+                <div class="calendar-input-wrapper" @click="showCalendar = !showCalendar">
+                  <span class="cal-display">📅 {{ nuevaAsignacion.fecha }}</span>
+                </div>
+                <div v-if="showCalendar" class="calendar-popup" @click.stop>
+                  <div class="cal-header">
+                    <button type="button" @click="prevMonth" class="cal-nav">&lt;</button>
+                    <span class="cal-title">{{ calMonthName }} {{ calYear }}</span>
+                    <button type="button" @click="nextMonth" class="cal-nav">&gt;</button>
+                  </div>
+                  <div class="cal-weekdays">
+                    <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
+                  </div>
+                  <div class="cal-grid">
+                    <button
+                      v-for="(day, idx) in calDays"
+                      :key="idx"
+                      type="button"
+                      class="cal-day"
+                      :class="{ empty: !day, selected: day && nuevaAsignacion.fecha === `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}` }"
+                      @click="selectCalendarDay(day)"
+                      :disabled="!day"
+                    >{{ day }}</button>
+                  </div>
+                </div>
               </div>
             </div>
-            <button type="submit" class="btn btn-success btn-block">💾 Guardar Asignación</button>
+            <div class="form-group">
+              <label>Vendedores ({{ vendedoresSeleccionados.length }}/{{ vendedores.length }})</label>
+              <button type="button" class="btn btn-ghost btn-sm" @click="toggleTodosVendedores">
+                {{ vendedoresSeleccionados.length === vendedores.length ? 'Desmarcar Todos' : 'Seleccionar Todos' }}
+              </button>
+              <div class="vendedores-checklist">
+                <label v-for="v in vendedores" :key="v.id" class="vendedor-check">
+                  <input type="checkbox" :value="v.nombre" v-model="vendedoresSeleccionados" />
+                  <span>{{ v.nombre }}</span>
+                </label>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-success btn-block" :disabled="vendedoresSeleccionados.length === 0">
+              💾 Guardar Asignación ({{ vendedoresSeleccionados.length }} vendedor{{ vendedoresSeleccionados.length !== 1 ? 'es' : '' }})
+            </button>
           </form>
         </div>
       </transition>
@@ -440,7 +609,6 @@ const productosFiltrados = computed(() => {
                     <th class="text-right">Asig.</th>
                     <th class="text-right">Vendido</th>
                     <th class="text-right">Pend.</th>
-                    <th class="text-center">Und.</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -449,7 +617,6 @@ const productosFiltrados = computed(() => {
                     <td class="text-right">{{ prod.asignado }}</td>
                     <td class="text-right success">{{ prod.vendido }}</td>
                     <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
-                    <td class="text-center unidad-val">{{ productos.find(p => p.id === prodId)?.medida || 'B' }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -470,7 +637,6 @@ const productosFiltrados = computed(() => {
                   <th>Vendedor</th>
                   <th>Producto</th>
                   <th class="text-right">Cantidad</th>
-                  <th class="text-center">Unidad</th>
                   <th></th>
                 </tr>
               </thead>
@@ -480,7 +646,6 @@ const productosFiltrados = computed(() => {
                   <td>{{ asig.vendedor }}</td>
                   <td>{{ asig.producto_nombre }}</td>
                   <td class="text-right">{{ asig.cantidad }}</td>
-                  <td class="text-center unidad-val">{{ productos.find(p => p.id === asig.producto_id)?.medida || 'B' }}</td>
                   <td class="text-center">
                     <button @click="eliminarAsignacion(asig.id)" class="btn-icon btn-danger" title="Eliminar">🗑️</button>
                   </td>
@@ -507,7 +672,6 @@ const productosFiltrados = computed(() => {
                 <th>Producto</th>
                 <th class="text-right">Precio</th>
                 <th class="text-right">Stock</th>
-                <th class="text-center">Unidad</th>
                 <th class="text-right">Valor Total</th>
               </tr>
             </thead>
@@ -516,13 +680,12 @@ const productosFiltrados = computed(() => {
                 <td>{{ item.nombre }}</td>
                 <td class="text-right">${{ item.precio.toFixed(2) }}</td>
                 <td class="text-right stock-val">{{ item.stock }}</td>
-                <td class="text-center unidad-val">{{ item.medida }}</td>
                 <td class="text-right total-val">${{ (item.precio * item.stock).toFixed(2) }}</td>
               </tr>
             </tbody>
             <tfoot>
               <tr>
-                <td colspan="4" class="text-right"><strong>Valor Total:</strong></td>
+                <td colspan="3" class="text-right"><strong>Valor Total:</strong></td>
                 <td class="text-right total-val"><strong>${{ totalAlmacen.toFixed(2) }}</strong></td>
               </tr>
             </tfoot>
@@ -540,21 +703,49 @@ const productosFiltrados = computed(() => {
         <!-- Filtro de fecha -->
         <div class="filtro-fecha">
           <span class="filtro-modo">
-            <button :class="{ active: filtroModo === 'hoy' }" @click="filtroModo = 'hoy'">Hoy</button>
-            <button :class="{ active: filtroModo === 'mes' }" @click="filtroModo = 'mes'">Mes</button>
-            <button :class="{ active: filtroModo === 'personalizado' }" @click="filtroModo = 'personalizado'">Personalizado</button>
+            <button :class="{ active: filtroPreset === 'hoy' }" @click="filtroPreset = 'hoy'">Hoy</button>
+            <button :class="{ active: filtroPreset === 'mes' }" @click="filtroPreset = 'mes'">Mes</button>
+            <button :class="{ active: filtroPreset === 'rango' }" @click="filtroPreset = 'rango'">Rango</button>
           </span>
-          <div v-if="filtroModo === 'personalizado'" class="filtro-rango">
-            <span class="cal-icon">📅</span>
-            <input type="date" v-model="filtroFechaDesde" class="date-input" min="2026-09-01" max="2026-09-30" />
-            <span>hasta</span>
-            <span class="cal-icon">📅</span>
-            <input type="date" v-model="filtroFechaHasta" class="date-input" min="2026-09-01" max="2026-09-30" />
+          <div v-if="filtroPreset === 'rango'" class="filtro-rango">
+            <div class="calendar-group">
+              <div class="calendar-input-wrapper" @click="abrirCalRango">
+                <span class="cal-display">📅 {{ filtroFechaDesde ? `${filtroFechaDesde} → ${filtroFechaHasta || filtroFechaDesde}` : 'Elegir fechas' }}</span>
+              </div>
+              <div v-if="showCalRango" class="calendar-popup" @click.stop>
+                <div class="cal-header">
+                  <button type="button" @click="prevMonth" class="cal-nav">&lt;</button>
+                  <span class="cal-title">{{ calMonthName }} {{ calYear }}</span>
+                  <button type="button" @click="nextMonth" class="cal-nav">&gt;</button>
+                </div>
+                <p class="cal-hint">{{ calObjetivo === 'desde' ? 'Elige el día inicial' : 'Elige el día final' }}</p>
+                <div class="cal-weekdays">
+                  <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
+                </div>
+                <div class="cal-grid">
+                  <button
+                    v-for="(day, idx) in calDays"
+                    :key="idx"
+                    type="button"
+                    class="cal-day"
+                    :class="{ empty: !day, selected: day && esDiaEnRango(`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`) }"
+                    @click="seleccionarDiaRango(day)"
+                    :disabled="!day"
+                  >{{ day }}</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
         <!-- Tabs de vendedores -->
         <div class="vendedor-tabs">
+          <button
+            :class="{ active: !vendedorSeleccionado }"
+            @click="vendedorSeleccionado = ''"
+          >
+            🧑‍🤝‍🧑 Todos
+          </button>
           <button
             v-for="v in ventasPorVendedorFiltrado"
             :key="v.vendedor"
@@ -565,8 +756,40 @@ const productosFiltrados = computed(() => {
           </button>
         </div>
 
+        <!-- Matriz cuando está "Todos" -->
+        <div v-if="!vendedorSeleccionado" class="matriz-ventas">
+          <table class="mini-table">
+            <thead>
+              <tr>
+                <th>Producto</th>
+                <th v-for="v in matrizVentasTodos.vendedores" :key="v" class="text-right">{{ v.split(' ')[0] }} {{ v.split(' ').slice(-1)[0] }}</th>
+                <th class="text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="prod in matrizVentasTodos.filas" :key="prod.producto_nombre">
+                <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
+                <td v-for="v in matrizVentasTodos.vendedores" :key="v" class="text-right">
+                  {{ prod.porVendedor[v] ? prod.porVendedor[v].vendido : 0 }}
+                </td>
+                <td class="text-right total-val">{{ prod.cantidadTotal }}</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td><strong>Total</strong></td>
+                <td v-for="v in matrizVentasTodos.vendedores" :key="v" class="text-right">
+                  <strong>{{ totalPorVendedorEnMatriz(v) }}</strong>
+                </td>
+                <td class="text-right total-val"><strong>{{ totalVentasUnidades }}</strong></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
         <!-- Ventas del vendedor seleccionado -->
-        <div v-for="item in ventasFiltradas" :key="item.vendedor" class="venta-card">
+        <div v-if="vendedorSeleccionado">
+          <div v-for="item in ventasFiltradas" :key="item.vendedor" class="venta-card">
           <div class="venta-header">
             <span class="vendedor-avatar">{{ item.vendedor.charAt(0) }}</span>
             <h3>{{ item.vendedor }}</h3>
@@ -578,7 +801,6 @@ const productosFiltrados = computed(() => {
                 <th>Producto</th>
                 <th class="text-right">Precio</th>
                 <th class="text-right">Cantidad</th>
-                <th class="text-center">Unidad</th>
                 <th class="text-right">Total</th>
               </tr>
             </thead>
@@ -587,25 +809,19 @@ const productosFiltrados = computed(() => {
                 <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                 <td class="text-right">${{ prod.precio.toFixed(2) }}</td>
                 <td class="text-right">{{ prod.vendido }}</td>
-                <td class="text-center unidad-val">{{ prod.medida }}</td>
                 <td class="text-right total-val">${{ prod.total.toFixed(2) }}</td>
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
 
-        <div v-if="ventasFiltradas.length === 0" class="empty-state">
+        <div v-if="vendedorSeleccionado && ventasFiltradas.length === 0" class="empty-state">
           <span class="empty-icon">📭</span>
           <p>No hay ventas para este vendedor</p>
         </div>
       </section>
 
-      <!-- Estado vacío -->
-      <div v-if="!loading && resumen.length === 0" class="empty-state-large">
-        <span class="empty-icon">📦</span>
-        <h3>Sin asignaciones</h3>
-        <p>No hay asignaciones para este mes. Usa el botón "Nueva Asignación" para comenzar.</p>
-      </div>
     </main>
   </div>
 </template>
@@ -751,6 +967,45 @@ body {
 
 .btn-block {
   width: 100%;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.vendedores-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  margin-top: 4px;
+}
+
+.vendedor-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.vendedor-check:hover {
+  background: var(--bg);
+}
+
+.vendedor-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
 }
 
 .btn-icon {
@@ -1108,6 +1363,39 @@ body {
   border-bottom: none;
 }
 
+/* Matriz de ventas "Todos" */
+.matriz-ventas {
+  overflow: auto;
+  max-height: 480px;
+  border-top: 1px solid var(--border);
+}
+
+.matriz-ventas table {
+  min-width: 900px;
+}
+
+.matriz-ventas th:first-child,
+.matriz-ventas td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg);
+  font-weight: 600;
+  min-width: 130px;
+}
+
+.matriz-ventas thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #eef2f6;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.matriz-ventas thead th:first-child {
+  z-index: 4;
+}
+
 /* Vendedor Grid */
 .vendedor-grid {
   display: grid;
@@ -1197,6 +1485,12 @@ body {
   gap: 12px;
 }
 
+.filtro-rango .calendar-input-wrapper {
+  padding: 8px 12px;
+  font-size: 13px;
+  min-width: 140px;
+}
+
 .filtro-rango label {
   font-size: 13px;
   font-weight: 600;
@@ -1247,6 +1541,138 @@ body {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.date-field {
+  width: 100%;
+  min-width: 180px;
+  cursor: pointer;
+}
+
+.date-field::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 18px;
+}
+
+.date-field::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+.calendar-group {
+  position: relative;
+}
+
+.calendar-input-wrapper {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.calendar-input-wrapper:hover {
+  border-color: var(--primary);
+}
+
+.cal-display {
+  user-select: none;
+}
+
+.calendar-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 200;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 12px;
+  width: 280px;
+  margin-top: 4px;
+}
+
+.cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cal-nav {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  transition: background 0.15s;
+}
+
+.cal-nav:hover {
+  background: var(--bg);
+}
+
+.cal-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.cal-weekdays span {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-light);
+  padding: 4px 0;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.cal-day {
+  border: none;
+  background: none;
+  padding: 8px 0;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.15s;
+  text-align: center;
+}
+
+.cal-day:hover:not(.empty):not(:disabled) {
+  background: var(--bg);
+}
+
+.cal-day.selected {
+  background: var(--primary);
+  color: white;
+  font-weight: 700;
+}
+
+.cal-day.empty {
+  cursor: default;
 }
 
 /* Seccion Tabs */
