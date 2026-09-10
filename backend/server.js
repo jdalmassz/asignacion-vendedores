@@ -274,62 +274,55 @@ app.get('/api/ventas', async (req, res) => {
   }
 });
 
-// GET /api/resumen — asignaciones vs vendido real (MariaDB)
+// GET /api/resumen — asignaciones vs pedidos del API (en proceso + completada)
 app.get('/api/resumen', async (req, res) => {
   try {
     const asignaciones = loadAsignaciones();
     const asignSep = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
 
-    // Group assignments by vendedor + producto (normalizar vendedor + mapear a GoodID)
-    const goods = await loadGoods();
+    // Group assignments by vendedor + producto
     const asignMap = {};
     const asignInfo = {};
     for (const a of asignSep) {
       const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
-      const goodId = findGoodIDForAsign(a, goods);
-      if (!goodId) continue;
-      const key = `${vendedorNorm}|${goodId}`;
+      const key = `${vendedorNorm}|${a.producto_id}`;
       if (!asignMap[key]) {
         asignMap[key] = 0;
-        asignInfo[key] = { ...a, vendedor: vendedorNorm, goodId };
+        asignInfo[key] = { ...a, vendedor: vendedorNorm };
       }
       asignMap[key] += a.cantidad;
     }
 
-    // Ventas reales desde MariaDB (despachadas Sign=-1) en el mes
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
-      SELECT o.Note, o.GoodID, o.Date, o.Qtty
-      FROM operations o
-      WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
-      AND o.Sign = -1 AND Note LIKE '%V-%'
-    `);
-    await conn.end();
-
-    const ventasMap = {};
-    for (const row of rows) {
-      const vendedor = normalizeVendedorName(row.Note);
+    // Pedidos del API en el mes, separar en_proceso vs completada (en packs)
+    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+    const procesoMap = {};
+    const completadaMap = {};
+    for (const o of orders) {
+      if (o.estado !== 'en_proceso' && o.estado !== 'completada') continue;
+      const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
       if (!vendedor) continue;
-      const key = `${vendedor}|${row.GoodID}`;
-      if (!asignInfo[key]) continue;
-      ventasMap[key] = (ventasMap[key] || 0) + (row.Qtty || 0);
+      const target = o.estado === 'completada' ? completadaMap : procesoMap;
+      for (const it of (o.items || [])) {
+        const key = `${vendedor}|${it.codigo}`;
+        if (!asignInfo[key]) continue;
+        target[key] = (target[key] || 0) + (it.packs || 0);
+      }
     }
 
-    // Build resumen (vendido topeado al asignado, pendiente nunca negativo)
+    // Build resumen
     const resumen = [];
     for (const key in asignMap) {
-      const [vendedor, prodId] = key.split('|');
       const info = asignInfo[key];
-      const vendido = Math.min(ventasMap[key] || 0, asignMap[key]);
+      const enProceso = procesoMap[key] || 0;
+      const completada = completadaMap[key] || 0;
       resumen.push({
-        vendedor,
+        vendedor: info.vendedor,
         producto_id: info.producto_id,
-        good_id: info.goodId,
         producto_nombre: info.producto_nombre,
         asignado: asignMap[key],
-        vendido,
-        bruto: ventasMap[key] || 0,
-        pendiente: asignMap[key] - vendido
+        en_proceso: enProceso,
+        completada,
+        pendiente: Math.max(0, asignMap[key] - enProceso - completada)
       });
     }
     res.json({ resumen });

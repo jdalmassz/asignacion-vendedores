@@ -260,7 +260,8 @@ const resumenPorVendedor = computed(() => {
     grouped[item.vendedor].productos[item.producto_id] = {
       producto_nombre: item.producto_nombre,
       asignado: item.asignado,
-      vendido: item.vendido,
+      en_proceso: item.en_proceso,
+      completada: item.completada,
       pendiente: item.pendiente
     }
   }
@@ -300,15 +301,18 @@ const ventasPorVendedor = computed(() => {
 // Totales generales
 const totalesGenerales = computed(() => {
   let totalAsignado = 0
-  let totalVendido = 0
+  let totalEnProceso = 0
+  let totalCompletada = 0
   for (const item of resumen.value) {
     totalAsignado += item.asignado
-    totalVendido += item.vendido
+    totalEnProceso += item.en_proceso
+    totalCompletada += item.completada
   }
   return {
     asignado: totalAsignado,
-    vendido: totalVendido,
-    pendiente: totalAsignado - totalVendido
+    en_proceso: totalEnProceso,
+    completada: totalCompletada,
+    pendiente: Math.max(0, totalAsignado - totalEnProceso - totalCompletada)
   }
 })
 
@@ -554,24 +558,24 @@ const productosFiltrados = computed(() => {
           </div>
         </div>
         <div class="stat-card stat-success">
-          <div class="stat-icon">✅</div>
+          <div class="stat-icon">⏳</div>
           <div class="stat-info">
-            <span class="stat-label">Total Vendido</span>
-            <span class="stat-value">{{ totalesGenerales.vendido }}</span>
+            <span class="stat-label">En Proceso</span>
+            <span class="stat-value">{{ totalesGenerales.en_proceso }}</span>
           </div>
         </div>
         <div class="stat-card stat-warning">
-          <div class="stat-icon">⏳</div>
+          <div class="stat-icon">✅</div>
           <div class="stat-info">
-            <span class="stat-label">Pendiente</span>
-            <span class="stat-value">{{ totalesGenerales.pendiente }}</span>
+            <span class="stat-label">Completado</span>
+            <span class="stat-value">{{ totalesGenerales.completada }}</span>
           </div>
         </div>
         <div class="stat-card stat-purple">
-          <div class="stat-icon">💰</div>
+          <div class="stat-icon">📭</div>
           <div class="stat-info">
-            <span class="stat-label">Ventas Totales</span>
-            <span class="stat-value">${{ totalVentas.toFixed(2) }}</span>
+            <span class="stat-label">Pendiente</span>
+            <span class="stat-value">{{ totalesGenerales.pendiente }}</span>
           </div>
         </div>
       </div>
@@ -607,7 +611,8 @@ const productosFiltrados = computed(() => {
                   <tr>
                     <th>Producto</th>
                     <th class="text-right">Asig.</th>
-                    <th class="text-right">Vendido</th>
+                    <th class="text-right">En Proc.</th>
+                    <th class="text-right">Compl.</th>
                     <th class="text-right">Pend.</th>
                   </tr>
                 </thead>
@@ -615,7 +620,8 @@ const productosFiltrados = computed(() => {
                   <tr v-for="(prod, prodId) in item.productos" :key="prodId">
                     <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                     <td class="text-right">{{ prod.asignado }}</td>
-                    <td class="text-right success">{{ prod.vendido }}</td>
+                    <td class="text-right warning">{{ prod.en_proceso }}</td>
+                    <td class="text-right success">{{ prod.completada }}</td>
                     <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
                   </tr>
                 </tbody>
@@ -1327,6 +1333,10 @@ body {
 
 .success {
   color: var(--success);
+}
+
+.warning {
+  color: var(--warning);
 }
 
 .danger {
