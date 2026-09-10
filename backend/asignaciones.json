@@ -1,82 +1,114 @@
 [
   {
     "id": 1,
-    "vendedor": "ALEXANDER PADRAN HECAVARRAA",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-01"
+    "vendedor": "ALEXANDER PADRON HECAVARRIA",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 2,
-    "vendedor": "ALEXANDER PADRON HECAVARRIA",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-01"
+    "vendedor": "DEYANIRA ZALDIVAR LUGO",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 3,
-    "vendedor": "ALFREDO HERNANDEZ OLIVA",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-02"
+    "vendedor": "JEAN MICHEL RAMOS CUZA",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 4,
-    "vendedor": "ANDY JESUS ALMANZA LOPEZ",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-01"
+    "vendedor": "ERNESTO RODRIGUEZ CASTELLANOS",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 5,
-    "vendedor": "DEYANIRA ZALDIVAR LUGO",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-02"
+    "vendedor": "ANDY JESUS ALMANZA LOPEZ",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 6,
-    "vendedor": "ERNESTO RODRIGUEZ CASTELLANOS",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-01"
+    "vendedor": "GEORLIS MICHEL CARDENAS MORA",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 7,
-    "vendedor": "GEORLIS MICHEL CARDENAS MORA",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-03"
+    "vendedor": "MAYLEN REMON DIAZ",
+    "producto_id": "Parranda 0.5L",
+    "producto_nombre": "PARRANDA 0.5L",
+    "cantidad": 912,
+    "fecha": "2026-09-10"
   },
   {
     "id": 8,
-    "vendedor": "IRADIEL CISNEROS",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-01"
+    "vendedor": "ERNESTO RODRIGUEZ CASTELLANOS",
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
   },
   {
     "id": 9,
     "vendedor": "JEAN MICHEL RAMOS CUZA",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-02"
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
   },
   {
     "id": 10,
+    "vendedor": "ALEXANDER PADRON HECAVARRIA",
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
+  },
+  {
+    "id": 11,
+    "vendedor": "DEYANIRA ZALDIVAR LUGO",
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
+  },
+  {
+    "id": 12,
+    "vendedor": "ANDY JESUS ALMANZA LOPEZ",
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
+  },
+  {
+    "id": 13,
+    "vendedor": "GEORLIS MICHEL CARDENAS MORA",
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
+  },
+  {
+    "id": 14,
     "vendedor": "MAYLEN REMON DIAZ",
-    "producto_id": 1697,
-    "producto_nombre": "MALTA GUAJIRA 1500 ML BLISTER 6U",
-    "cantidad": 200,
-    "fecha": "2026-09-03"
+    "producto_id": "RONE0009",
+    "producto_nombre": "RONES VODKA REGIO BLISTER 6U",
+    "cantidad": 180,
+    "fecha": "2026-09-09"
   }
 ]
