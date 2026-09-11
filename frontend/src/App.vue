@@ -23,7 +23,10 @@ const seccionActiva = ref('resumen') // 'resumen', 'asignaciones'
 const filtroFechaDesde = ref('')
 const filtroFechaHasta = ref('')
 
-const fechaHoy = new Date().toISOString().split('T')[0]
+const fechaHoy = (() => {
+  const f = new Date()
+  return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`
+})()
 
 // Formulario de nueva asignación
 const nuevaAsignacion = ref({
@@ -82,6 +85,9 @@ function abrirCalRango() {
     } else {
       rangoTmpDesde.value = ''
       calObjetivo.value = 'desde'
+      const hoy = new Date()
+      calYear.value = hoy.getFullYear()
+      calMonth.value = hoy.getMonth()
     }
     rangoTmpHasta.value = filtroFechaHasta.value
     if (!rangoTmpDesde.value && !rangoTmpHasta.value) calObjetivo.value = 'desde'
@@ -312,7 +318,7 @@ const totalesGenerales = computed(() => {
     asignado: totalAsignado,
     en_proceso: totalEnProceso,
     completada: totalCompletada,
-    pendiente: Math.max(0, totalAsignado - totalEnProceso - totalCompletada)
+    pendiente: Math.max(0, totalAsignado - totalCompletada - totalEnProceso)
   }
 })
 
