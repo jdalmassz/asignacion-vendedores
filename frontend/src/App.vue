@@ -367,26 +367,33 @@ const ventasPorVendedorFiltrado = computed(() => {
     if (!grouped[item.vendedor]) {
       grouped[item.vendedor] = {
         vendedor: item.vendedor,
-        productos: {}
+        productos: {},
+        clientes: new Set()
       }
     }
+    if (item.cliente) grouped[item.vendedor].clientes.add(item.cliente)
     const key = item.producto_nombre
     if (!grouped[item.vendedor].productos[key]) {
       grouped[item.vendedor].productos[key] = {
         producto_nombre: item.producto_nombre,
         precio: item.precio || 0,
         vendido: 0,
-        total: 0
+        total: 0,
+        clientes: new Set()
       }
     }
     grouped[item.vendedor].productos[key].vendido += item.cantidad
     grouped[item.vendedor].productos[key].total += item.total
+    if (item.cliente) grouped[item.vendedor].productos[key].clientes.add(item.cliente)
   }
   return Object.values(grouped)
     .sort((a, b) => a.vendedor.localeCompare(b.vendedor))
     .map(g => ({
       ...g,
-      productos: Object.values(g.productos).sort((a, b) => a.producto_nombre.localeCompare(b.producto_nombre))
+      clientes: g.clientes.size,
+      productos: Object.values(g.productos)
+        .map(p => ({ ...p, clientes: p.clientes.size }))
+        .sort((a, b) => a.producto_nombre.localeCompare(b.producto_nombre))
     }))
 })
 
@@ -394,17 +401,26 @@ const ventasPorVendedorFiltrado = computed(() => {
 const matrizVentasTodos = computed(() => {
   const vendedores = ventasPorVendedorFiltrado.value
   const productosMap = {}
+  const clientesGlobales = {}
+  for (const item of ventasFiltradasPorFecha.value) {
+    const key = item.producto_nombre
+    if (!clientesGlobales[key]) clientesGlobales[key] = new Set()
+    if (item.cliente) clientesGlobales[key].add(item.cliente)
+  }
+  for (const [key, setClientes] of Object.entries(clientesGlobales)) {
+    if (!productosMap[key]) {
+      productosMap[key] = {
+        producto_nombre: key,
+        porVendedor: {},
+        cantidadTotal: 0,
+        totalTotal: 0,
+        clientes: setClientes.size
+      }
+    }
+  }
   for (const v of vendedores) {
     for (const p of v.productos) {
-      if (!productosMap[p.producto_nombre]) {
-        productosMap[p.producto_nombre] = {
-          producto_nombre: p.producto_nombre,
-          porVendedor: {},
-          cantidadTotal: 0,
-          totalTotal: 0
-        }
-      }
-      productosMap[p.producto_nombre].porVendedor[v.vendedor] = { vendido: p.vendido, total: p.total }
+      productosMap[p.producto_nombre].porVendedor[v.vendedor] = { vendido: p.vendido, total: p.total, clientes: p.clientes }
       productosMap[p.producto_nombre].cantidadTotal += p.vendido
       productosMap[p.producto_nombre].totalTotal += p.total
     }
@@ -439,6 +455,14 @@ function totalPorVendedorEnMatriz(vendedor) {
   if (!v) return 0
   return Object.values(v.productos).reduce((s, p) => s + p.vendido, 0)
 }
+
+const totalClientesMatriz = computed(() => {
+  const set = new Set()
+  for (const item of ventasFiltradasPorFecha.value) {
+    if (item.cliente) set.add(item.cliente)
+  }
+  return set.size
+})
 
 // Total general almacén
 const totalAlmacen = computed(() => {
@@ -776,6 +800,7 @@ const productosFiltrados = computed(() => {
                 <th>Producto</th>
                 <th v-for="v in matrizVentasTodos.vendedores" :key="v" class="text-right">{{ v.split(' ')[0] }} {{ v.split(' ').slice(-1)[0] }}</th>
                 <th class="text-right">Total</th>
+                <th class="text-right">Clientes</th>
               </tr>
             </thead>
             <tbody>
@@ -783,8 +808,10 @@ const productosFiltrados = computed(() => {
                 <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                 <td v-for="v in matrizVentasTodos.vendedores" :key="v" class="text-right">
                   {{ prod.porVendedor[v] ? prod.porVendedor[v].vendido : 0 }}
+                  <span v-if="prod.porVendedor[v] && prod.porVendedor[v].clientes" class="clientes-mini">👥{{ prod.porVendedor[v].clientes }}</span>
                 </td>
                 <td class="text-right total-val">{{ prod.cantidadTotal }}</td>
+                <td class="text-right clientes-total">👥 {{ prod.clientes }}</td>
               </tr>
             </tbody>
             <tfoot>
@@ -794,6 +821,7 @@ const productosFiltrados = computed(() => {
                   <strong>{{ totalPorVendedorEnMatriz(v) }}</strong>
                 </td>
                 <td class="text-right total-val"><strong>{{ totalVentasUnidades }}</strong></td>
+                <td class="text-right clientes-total"><strong>👥 {{ totalClientesMatriz }}</strong></td>
               </tr>
             </tfoot>
           </table>
@@ -805,6 +833,7 @@ const productosFiltrados = computed(() => {
           <div class="venta-header">
             <span class="vendedor-avatar">{{ item.vendedor.charAt(0) }}</span>
             <h3>{{ item.vendedor }}</h3>
+            <span class="venta-clientes">👥 {{ item.clientes }} {{ item.clientes === 1 ? 'cliente' : 'clientes' }}</span>
             <span class="venta-total">${{ Object.values(item.productos).reduce((s, p) => s + p.total, 0).toFixed(2) }}</span>
           </div>
           <table class="mini-table">
@@ -813,6 +842,7 @@ const productosFiltrados = computed(() => {
                 <th>Producto</th>
                 <th class="text-right">Precio</th>
                 <th class="text-right">Cantidad</th>
+                <th class="text-right">Clientes</th>
                 <th class="text-right">Total</th>
               </tr>
             </thead>
@@ -821,6 +851,7 @@ const productosFiltrados = computed(() => {
                 <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                 <td class="text-right">${{ prod.precio.toFixed(2) }}</td>
                 <td class="text-right">{{ prod.vendido }}</td>
+                <td class="text-right">👥 {{ prod.clientes }}</td>
                 <td class="text-right total-val">${{ prod.total.toFixed(2) }}</td>
               </tr>
             </tbody>
@@ -1793,6 +1824,28 @@ body {
   padding: 4px 12px;
   border-radius: 20px;
   font-size: 13px;
+  font-weight: 600;
+}
+
+.venta-clientes {
+  background: #eef2ff;
+  color: var(--primary);
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.clientes-mini {
+  display: block;
+  font-size: 11px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.clientes-total {
+  color: var(--primary);
   font-weight: 600;
 }
 
