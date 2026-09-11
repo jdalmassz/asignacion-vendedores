@@ -12,6 +12,7 @@ const resumen = ref([])
 const ventas = ref([])
 const asignaciones = ref([])
 const almacen = ref([])
+const totalesAlmacen = ref({ productos: 0, unidades: 0, valor: 0 })
 const loading = ref(false)
 const error = ref(null)
 
@@ -229,7 +230,8 @@ async function cargarAsignaciones() {
 async function cargarAlmacen() {
   try {
     const res = await axios.get(`${API_URL}/almacen`)
-    almacen.value = [...res.data.productos].sort((a, b) => (a.producto_nombre || a.nombre || '').localeCompare(b.producto_nombre || b.nombre || ''))
+    almacen.value = res.data.productos || []
+    totalesAlmacen.value = res.data.totales || { productos: 0, unidades: 0, valor: 0 }
   } catch (e) {
     console.error('Error al cargar almacén:', e)
   }
@@ -259,7 +261,7 @@ async function crearAsignacion() {
     return
   }
 
-  const producto = productos.value.find(p => p.id == nuevaAsignacion.value.producto)
+  const producto = productosFiltrados.value.find(p => p.id == nuevaAsignacion.value.producto)
   if (!producto) return
 
   try {
@@ -299,6 +301,11 @@ async function eliminarAsignacion(id) {
 // Agrupar resumen por vendedor
 const resumenPorVendedor = computed(() => {
   const grouped = {}
+  const vendidoMap = {}
+  for (const v of ventas.value) {
+    const key = `${v.vendedor}|${v.producto_id}`
+    vendidoMap[key] = (vendidoMap[key] || 0) + (v.cantidad || 0)
+  }
   for (const item of resumen.value) {
     if (!grouped[item.vendedor]) {
       grouped[item.vendedor] = {
@@ -312,7 +319,8 @@ const resumenPorVendedor = computed(() => {
       asignado: item.asignado,
       en_proceso: item.en_proceso,
       completada: item.completada,
-      pendiente: item.pendiente
+      pendiente: item.pendiente,
+      vendido: vendidoMap[`${item.vendedor}|${item.good_id}`] || 0
     }
   }
   return Object.values(grouped)
@@ -510,18 +518,32 @@ const totalClientesMatriz = computed(() => {
   return set.size
 })
 
-// Total general almacén
-const totalAlmacen = computed(() => {
-  let total = 0
-  for (const item of almacen.value) {
-    total += (item.precio || 0) * (item.stock || 0)
+// Matriz de stock por producto y almacén
+const matrizAlmacen = computed(() => {
+  const productos = {}
+  for (const alm of almacen.value) {
+    for (const p of alm.productos) {
+      if (!productos[p.producto_id]) {
+        productos[p.producto_id] = { producto_id: p.producto_id, nombre: p.nombre, precio: p.precio, stock: 0, porAlmacen: {} }
+      }
+      productos[p.producto_id].porAlmacen[alm.almacen] = p.stock
+      productos[p.producto_id].stock += p.stock
+    }
   }
-  return total
+  return {
+    productos: Object.values(productos).sort((a, b) => a.nombre.localeCompare(b.nombre))
+  }
 })
 
-// Filtrar solo productos (ya vienen de Procovar con ventas reales)
+// Filtrar solo los productos disponibles en camaguey (sin contar FLORIDA, es otra sucursal)
 const productosFiltrados = computed(() => {
-  return [...productos.value].sort((a, b) => a.name.localeCompare(b.name))
+  return matrizAlmacen.value.productos
+    .map(p => ({
+      id: p.producto_id,
+      name: p.nombre,
+      stock: Object.entries(p.porAlmacen).reduce((s, [k, v]) => k === 'FLORIDA' ? s : s + v, 0)
+    }))
+    .filter(p => p.stock > 0)
 })
 
 // Detalle de pedidos en proceso
@@ -723,9 +745,10 @@ function esFilaExpandida(vendedor, producto_id) {
                   <tr>
                     <th>Producto</th>
                     <th class="text-right">Asig.</th>
-                    <th class="text-right">En Proc.</th>
+                    <th class="text-right" title="Tiene pedido pero no ha pagado">En Proc.</th>
                     <th class="text-right">Compl.</th>
-                    <th class="text-right">Pend.</th>
+                    <th class="text-right" title="Asignado menos lo vendido: esta cantidad podría no pagarse">Pend.</th>
+                    <th class="text-right">Vend.</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -740,9 +763,10 @@ function esFilaExpandida(vendedor, producto_id) {
                       <td class="text-right warning">{{ prod.en_proceso }}</td>
                       <td class="text-right success">{{ prod.completada }}</td>
                       <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
+                      <td class="text-right">{{ prod.vendido }}</td>
                     </tr>
                     <tr v-if="esFilaExpandida(item.vendedor, prod.producto_id)">
-                      <td colspan="5" class="detalle-container">
+                      <td colspan="6" class="detalle-container">
                         <div v-if="loadingDetalle" class="detalle-loading">Cargando...</div>
                         <div v-else-if="pedidosParaFila(item.vendedor, prod.producto_id).length === 0" class="detalle-empty">
                           No hay pedidos en proceso
@@ -816,32 +840,26 @@ function esFilaExpandida(vendedor, producto_id) {
       <section v-if="almacen.length > 0" class="card">
         <div class="card-header">
           <h2><AppIcon name="warehouse" :size="18" /> Stock en Almacén</h2>
-          <span class="badge">{{ almacen.length }} productos</span>
+          <span class="badge">{{ totalesAlmacen.productos }} productos</span>
         </div>
-        <div class="table-wrapper">
+        <div class="table-wrapper table-almacen">
           <table class="data-table">
             <thead>
               <tr>
                 <th>Producto</th>
                 <th class="text-right">Precio</th>
-                <th class="text-right">Stock</th>
-                <th class="text-right">Valor Total</th>
+                <th v-for="a in almacen" :key="a.almacen" class="text-right">{{ a.almacen }}</th>
+                <th class="text-right">Total</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in almacen" :key="item.producto_id">
+              <tr v-for="item in matrizAlmacen.productos" :key="item.producto_id">
                 <td>{{ item.nombre }}</td>
                 <td class="text-right">${{ item.precio.toFixed(2) }}</td>
+                <td v-for="a in almacen" :key="a.almacen" class="text-right stock-val">{{ item.porAlmacen[a.almacen] || 0 }}</td>
                 <td class="text-right stock-val">{{ item.stock }}</td>
-                <td class="text-right total-val">${{ (item.precio * item.stock).toFixed(2) }}</td>
               </tr>
             </tbody>
-            <tfoot>
-              <tr>
-                <td colspan="3" class="text-right"><strong>Valor Total:</strong></td>
-                <td class="text-right total-val"><strong>${{ totalAlmacen.toFixed(2) }}</strong></td>
-              </tr>
-            </tfoot>
           </table>
         </div>
       </section>
@@ -1446,6 +1464,19 @@ body {
 /* Tables */
 .table-wrapper {
   overflow-x: auto;
+}
+
+.table-almacen {
+  max-height: 480px;
+  overflow: auto;
+}
+
+.table-almacen thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #eef2f6;
+  box-shadow: 0 1px 0 var(--border, #d1d5db);
 }
 
 .data-table {

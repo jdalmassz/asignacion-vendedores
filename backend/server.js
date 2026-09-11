@@ -343,11 +343,12 @@ app.get('/api/resumen', async (req, res) => {
       resumen.push({
         vendedor: info.vendedor,
         producto_id: info.producto_id,
+        good_id: info.goodId,
         producto_nombre: info.producto_nombre,
         asignado: asignMap[key],
         en_proceso: enProceso,
         completada,
-        pendiente: Math.max(0, asignMap[key] - completada - enProceso)
+        pendiente: Math.max(0, asignMap[key] - completada)
       });
     }
     res.json({ resumen });
@@ -361,24 +362,40 @@ app.get('/api/almacen', async (req, res) => {
   try {
     const conn = await getConnection();
     const [rows] = await conn.query(`
-      SELECT g.ID, g.Code, g.Name, g.PriceOut1, SUM(s.Qtty) AS stock
+      SELECT o.ID AS object_id, o.Name AS almacen, g.ID, g.Code, g.Name, g.PriceOut1, SUM(s.Qtty) AS stock
       FROM store s
       LEFT JOIN goods g ON s.GoodID = g.ID
+      LEFT JOIN objects o ON s.ObjectID = o.ID
       WHERE s.Qtty > 0
-      GROUP BY g.ID, g.Code, g.Name, g.PriceOut1
+        AND g.Name <> 'ENTREGA A DOMICILIO'
+      GROUP BY o.ID, o.Name, g.ID, g.Code, g.Name, g.PriceOut1
       HAVING stock > 0
     `);
     await conn.end();
-    const productos = rows
-      .filter(r => r.Name && r.ID)
-      .map(r => ({
+    const almacenes = {};
+    for (const r of rows) {
+      if (!r.Name || !r.ID) continue;
+      const nombre = r.almacen || ('Almacen ' + r.object_id);
+      if (!almacenes[nombre]) almacenes[nombre] = { almacen: nombre, productos: [] };
+      almacenes[nombre].productos.push({
         producto_id: r.Code || r.ID,
         nombre: r.Name,
         precio: r.PriceOut1 || 0,
         stock: r.stock
-      }))
-      .sort((a, b) => a.nombre.localeCompare(b.nombre));
-    res.json({ productos });
+      });
+    }
+    Object.values(almacenes).forEach(a => {
+      a.productos.sort((x, y) => x.nombre.localeCompare(y.nombre));
+      a.total_unidades = a.productos.reduce((s, p) => s + p.stock, 0);
+      a.total_valor = a.productos.reduce((s, p) => s + (p.precio || 0) * p.stock, 0);
+    });
+    const lista = Object.values(almacenes).sort((a, b) => a.almacen.localeCompare(b.almacen));
+    const totales = {
+      productos: lista.reduce((s, a) => s + a.productos.length, 0),
+      unidades: lista.reduce((s, a) => s + a.total_unidades, 0),
+      valor: lista.reduce((s, a) => s + a.total_valor, 0)
+    };
+    res.json({ productos: lista, totales });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
