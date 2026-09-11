@@ -9,17 +9,23 @@ app.use(express.json());
 
 const ASIGNACIONES_FILE = 'asignaciones.json';
 
+try {
+  process.loadEnvFile();
+} catch (e) {
+  // .env no existe: usar variables de entorno del sistema
+}
+
 // Procovar API config
-const API_BASE = 'https://pedidos.procovar.cloud/api';
-const API_KEY = 'PROCOVAR_API_KEY_ENV';
-const SUCURSAL_ID = 'PROCOVAR_SUCURSAL_ID_ENV';
+const API_BASE = process.env.PROCOVAR_API_BASE || 'https://pedidos.procovar.cloud/api';
+const API_KEY = process.env.PROCOVAR_API_KEY || '';
+const SUCURSAL_ID = process.env.PROCOVAR_SUCURSAL_ID || '';
 
 // MySQL config (productos y almacen)
 const dbConfig = {
-  host: 'DB_HOST_ENV',
-  user: 'root',
-  password: 'root',
-  database: 'camaguey',
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'camaguey',
   charset: 'utf8mb4'
 };
 
