@@ -243,12 +243,12 @@ app.get('/api/ventas', async (req, res) => {
   try {
     const conn = await getConnection();
     const [rows] = await conn.query(`
-      SELECT o.Note, o.GoodID, o.Date, g.Name, g.PriceOut1, g.Measure1, g.Measure2, SUM(o.Qtty) as TotalVendido
+      SELECT o.Note, o.GoodID, o.Date, o.PartnerID, g.Name, g.PriceOut1, g.Measure1, g.Measure2, SUM(o.Qtty) as TotalVendido
       FROM operations o
       LEFT JOIN goods g ON o.GoodID = g.ID
       WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
       AND o.Sign = -1 AND Note LIKE '%V-%'
-      GROUP BY o.Note, o.GoodID, o.Date, g.Name, g.PriceOut1, g.Measure1, g.Measure2
+      GROUP BY o.Note, o.GoodID, o.Date, o.PartnerID, g.Name, g.PriceOut1, g.Measure1, g.Measure2
     `);
     await conn.end();
 
@@ -266,7 +266,8 @@ app.get('/api/ventas', async (req, res) => {
         precio: row.PriceOut1 || 0,
         cantidad: row.TotalVendido || 0,
         total: (row.PriceOut1 || 0) * (row.TotalVendido || 0),
-        fecha: fechaStr
+        fecha: fechaStr,
+        cliente: row.PartnerID || 0
       });
     }
     res.json({ ventas });
