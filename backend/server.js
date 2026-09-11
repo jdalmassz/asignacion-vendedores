@@ -48,6 +48,7 @@ function normalizeVendedorName(note) {
   name = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   name = name.replace(/PADRAN/gi, 'PADRON');
   name = name.replace(/HECAVARRAA/gi, 'HECAVARRIA');
+  name = name.replace(/IRADIEL(?!\sCISNEROS)/gi, 'IRADIEL CISNEROS');
   name = name.replace(/[^A-Za-z\s]/g, '').toUpperCase();
   return name.replace(/\s+/g, ' ').trim();
 }
@@ -256,7 +257,7 @@ app.get('/api/ventas', async (req, res) => {
       const vendedor = normalizeVendedorName(row.Note);
       if (!vendedor) continue;
       const fechaStr = row.Date instanceof Date
-        ? row.Date.toISOString().split('T')[0]
+        ? `${row.Date.getFullYear()}-${String(row.Date.getMonth() + 1).padStart(2, '0')}-${String(row.Date.getDate()).padStart(2, '0')}`
         : String(row.Date).split('T')[0];
       ventas.push({
         vendedor,
@@ -274,47 +275,70 @@ app.get('/api/ventas', async (req, res) => {
   }
 });
 
-// GET /api/resumen — asignaciones vs pedidos del API (en proceso + completada)
+// GET /api/resumen — asignaciones vs despachos reales (MariaDB) + pedidos en proceso (API)
 app.get('/api/resumen', async (req, res) => {
   try {
     const asignaciones = loadAsignaciones();
     const asignSep = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
 
-    // Group assignments by vendedor + producto
+    // Group assignments by vendedor + producto (mapear a GoodID real)
+    const goods = await loadGoods();
     const asignMap = {};
     const asignInfo = {};
     for (const a of asignSep) {
       const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
+      const goodId = findGoodIDForAsign(a, goods);
+      if (!goodId) continue;
       const key = `${vendedorNorm}|${a.producto_id}`;
       if (!asignMap[key]) {
         asignMap[key] = 0;
-        asignInfo[key] = { ...a, vendedor: vendedorNorm };
+        asignInfo[key] = { ...a, vendedor: vendedorNorm, goodId };
       }
       asignMap[key] += a.cantidad;
     }
 
-    // Pedidos del API en el mes, separar en_proceso vs completada (en packs)
+    // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
+    const conn = await getConnection();
+    const [rows] = await conn.query(`
+      SELECT o.Note, o.GoodID, o.Qtty
+      FROM operations o
+      WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
+      AND o.Sign = -1 AND Note LIKE '%V-%'
+    `);
+    await conn.end();
+
+    const despachosMap = {};   // vendedor|GoodID -> packs despachados
+    const foliosDespachados = new Set();
+    for (const row of rows) {
+      const vendedor = normalizeVendedorName(row.Note);
+      if (!vendedor) continue;
+      const m = row.Note.match(/(?:^|;)P-([A-Z0-9\-]+);/i);
+      if (m) foliosDespachados.add(m[1].toUpperCase());
+      despachosMap[`${vendedor}|${row.GoodID}`] = (despachosMap[`${vendedor}|${row.GoodID}`] || 0) + (row.Qtty || 0);
+    }
+
+    // Pedidos del API: solo en_proceso que aún NO se despacharon (evitar doble conteo)
     const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
     const procesoMap = {};
-    const completadaMap = {};
     for (const o of orders) {
-      if (o.estado !== 'en_proceso' && o.estado !== 'completada') continue;
+      if (o.estado !== 'en_proceso') continue;
+      if (!o.folio) continue;
+      if (foliosDespachados.has(o.folio.toUpperCase())) continue;
       const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
       if (!vendedor) continue;
-      const target = o.estado === 'completada' ? completadaMap : procesoMap;
       for (const it of (o.items || [])) {
         const key = `${vendedor}|${it.codigo}`;
         if (!asignInfo[key]) continue;
-        target[key] = (target[key] || 0) + (it.packs || 0);
+        procesoMap[key] = (procesoMap[key] || 0) + (it.packs || 0);
       }
     }
 
-    // Build resumen
+    // Build resumen: completada = despachos reales (topeado al asignado), en_proceso del API
     const resumen = [];
     for (const key in asignMap) {
       const info = asignInfo[key];
+      const completada = Math.min(despachosMap[`${info.vendedor}|${info.goodId}`] || 0, asignMap[key]);
       const enProceso = procesoMap[key] || 0;
-      const completada = completadaMap[key] || 0;
       resumen.push({
         vendedor: info.vendedor,
         producto_id: info.producto_id,
@@ -322,7 +346,7 @@ app.get('/api/resumen', async (req, res) => {
         asignado: asignMap[key],
         en_proceso: enProceso,
         completada,
-        pendiente: Math.max(0, asignMap[key] - enProceso - completada)
+        pendiente: Math.max(0, asignMap[key] - completada - enProceso)
       });
     }
     res.json({ resumen });
@@ -331,27 +355,27 @@ app.get('/api/resumen', async (req, res) => {
   }
 });
 
-// GET /api/almacen — desde Procovar API (stock de pedidos recientes)
+// GET /api/almacen — desde MariaDB (store, inventario real)
 app.get('/api/almacen', async (req, res) => {
   try {
-    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
-    const seen = {};
-    for (const order of orders) {
-      if (!order.items) continue;
-      for (const item of order.items) {
-        const name = item.producto || item.codigo;
-        if (name && (!seen[name] || item.stock > seen[name].stock)) {
-          seen[name] = {
-            producto_id: item.codigo || name,
-            nombre: name,
-            precio: item.precioUnidad || 0,
-            stock: item.stock || 0
-          };
-        }
-      }
-    }
-    const productos = Object.values(seen)
-      .filter(p => p.stock > 0)
+    const conn = await getConnection();
+    const [rows] = await conn.query(`
+      SELECT g.ID, g.Code, g.Name, g.PriceOut1, SUM(s.Qtty) AS stock
+      FROM store s
+      LEFT JOIN goods g ON s.GoodID = g.ID
+      WHERE s.Qtty > 0
+      GROUP BY g.ID, g.Code, g.Name, g.PriceOut1
+      HAVING stock > 0
+    `);
+    await conn.end();
+    const productos = rows
+      .filter(r => r.Name && r.ID)
+      .map(r => ({
+        producto_id: r.Code || r.ID,
+        nombre: r.Name,
+        precio: r.PriceOut1 || 0,
+        stock: r.stock
+      }))
       .sort((a, b) => a.nombre.localeCompare(b.nombre));
     res.json({ productos });
   } catch (err) {
