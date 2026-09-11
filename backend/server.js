@@ -94,6 +94,20 @@ function findGoodIDForAsign(a, goods) {
   return bestScore >= 2 ? best : null;
 }
 
+function canonCode(g) {
+  return String(g.Code || '').trim() || String(g.ID);
+}
+
+function goodIdFromItem(it, goods) {
+  if (!it) return null;
+  const c = String(it.codigo || '').trim().toUpperCase();
+  if (c) {
+    const byCode = goods.find(g => canonCode(g).toUpperCase() === c);
+    if (byCode) return byCode.ID;
+  }
+  return findGoodIDForAsign({ producto_id: it.codigo || '', producto_nombre: it.producto || it.codigo || '' }, goods) || null;
+}
+
 async function apiGet(path) {
   const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}sucursalId=${SUCURSAL_ID}`;
   const resp = await fetch(url, {
@@ -296,10 +310,16 @@ app.get('/api/resumen', async (req, res) => {
       const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
       const goodId = findGoodIDForAsign(a, goods);
       if (!goodId) continue;
-      const key = `${vendedorNorm}|${a.producto_id}`;
+      const g = goods.find(gg => gg.ID === goodId);
+      const key = `${vendedorNorm}|${goodId}`;
       if (!asignMap[key]) {
         asignMap[key] = 0;
-        asignInfo[key] = { ...a, vendedor: vendedorNorm, goodId };
+        asignInfo[key] = {
+          vendedor: vendedorNorm,
+          goodId,
+          producto_id: g ? canonCode(g) : String(a.producto_id || a.producto_nombre || goodId),
+          producto_nombre: g ? g.Name : a.producto_nombre
+        };
       }
       asignMap[key] += a.cantidad;
     }
@@ -334,7 +354,9 @@ app.get('/api/resumen', async (req, res) => {
       const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
       if (!vendedor) continue;
       for (const it of (o.items || [])) {
-        const key = `${vendedor}|${it.codigo}`;
+        const goodId = goodIdFromItem(it, goods);
+        if (!goodId) continue;
+        const key = `${vendedor}|${goodId}`;
         if (!asignInfo[key]) continue;
         procesoMap[key] = (procesoMap[key] || 0) + (it.packs || 0);
       }
@@ -421,6 +443,7 @@ app.get('/api/clientes-por-vendedor', async (req, res) => {
 app.get('/api/detalle-proceso', async (req, res) => {
   try {
     const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+    const goods = await loadGoods();
 
     // Despachos reales para saber qué folios ya se despacharon
     const conn = await getConnection();
@@ -444,9 +467,13 @@ app.get('/api/detalle-proceso', async (req, res) => {
       const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
       if (!vendedor) continue;
       for (const it of (o.items || [])) {
-        const key = `${vendedor}|${it.codigo}`;
+        const goodId = goodIdFromItem(it, goods);
+        if (!goodId) continue;
+        const g = goods.find(gg => gg.ID === goodId);
+        const producto_id = g ? canonCode(g) : String(it.codigo || it.producto || goodId);
+        const key = `${vendedor}|${producto_id}`;
         if (!result[key]) {
-          result[key] = { vendedor, producto_id: it.codigo, pedidos: [] };
+          result[key] = { vendedor, producto_id, pedidos: [] };
         }
         result[key].pedidos.push({
           folio: o.folio,

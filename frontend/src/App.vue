@@ -7,7 +7,6 @@ const API_URL = 'http://localhost:4000/api'
 
 // Estado de los datos
 const vendedores = ref([])
-const productos = ref([])
 const resumen = ref([])
 const ventas = ref([])
 const asignaciones = ref([])
@@ -195,9 +194,6 @@ async function cargarDatos() {
     const resVendedores = await axios.get(`${API_URL}/vendedores`)
     vendedores.value = resVendedores.data.vendedores
 
-    const resProductos = await axios.get(`${API_URL}/productos`)
-    productos.value = resProductos.data.productos
-
     await cargarVentas()
     // Seleccionar primer vendedor por defecto en ventas
     const uniqueVendedores = [...new Set(ventas.value.map(v => v.vendedor))]
@@ -366,7 +362,7 @@ const totalesGenerales = computed(() => {
     totalAsignado += item.asignado
     totalEnProceso += item.en_proceso
     totalCompletada += item.completada
-    totalPendiente += Math.max(0, item.asignado - item.completada - item.en_proceso)
+    totalPendiente += item.pendiente || 0
   }
   return {
     asignado: totalAsignado,
