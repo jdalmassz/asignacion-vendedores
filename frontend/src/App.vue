@@ -1,6 +1,7 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import axios from 'axios'
+import AppIcon from './components/AppIcon.vue'
 
 const API_URL = 'http://localhost:4000/api'
 
@@ -143,7 +144,46 @@ onMounted(async () => {
     }
   })
   await cargarDatos()
+  autoRefresh = setInterval(refreshLigero, 30000)
 })
+
+onUnmounted(() => {
+  limpiarAutoRefresh()
+})
+
+let autoRefresh = null
+
+let snapshotResumen = ''
+let snapshotVentas = ''
+const hayCambios = ref(false)
+
+function snapshotDe(arr) {
+  return JSON.stringify(arr || [])
+}
+
+function limpiarAutoRefresh() {
+  if (autoRefresh) {
+    clearInterval(autoRefresh)
+    autoRefresh = null
+  }
+}
+
+async function refreshLigero() {
+  if (loading.value) return
+  try {
+    const [rResumen, rVentas] = await Promise.all([
+      axios.get(`${API_URL}/resumen`),
+      axios.get(`${API_URL}/ventas`)
+    ])
+    const nuevoSnapResumen = snapshotDe(rResumen.data.resumen)
+    const nuevoSnapVentas = snapshotDe(rVentas.data.ventas)
+    if (nuevoSnapResumen !== snapshotResumen || nuevoSnapVentas !== snapshotVentas) {
+      hayCambios.value = true
+    }
+  } catch (e) {
+    console.error('Error comprobando cambios:', e)
+  }
+}
 
 async function cargarDatos() {
   loading.value = true
@@ -166,6 +206,9 @@ async function cargarDatos() {
     await cargarResumen()
     await cargarAsignaciones()
     await cargarAlmacen()
+    snapshotResumen = snapshotDe(resumen.value)
+    snapshotVentas = snapshotDe(ventas.value)
+    hayCambios.value = false
   } catch (e) {
     error.value = 'Error al cargar datos: ' + (e.message || e)
     console.error(e)
@@ -264,6 +307,7 @@ const resumenPorVendedor = computed(() => {
       }
     }
     grouped[item.vendedor].productos[item.producto_id] = {
+      producto_id: item.producto_id,
       producto_nombre: item.producto_nombre,
       asignado: item.asignado,
       en_proceso: item.en_proceso,
@@ -309,16 +353,18 @@ const totalesGenerales = computed(() => {
   let totalAsignado = 0
   let totalEnProceso = 0
   let totalCompletada = 0
+  let totalPendiente = 0
   for (const item of resumen.value) {
     totalAsignado += item.asignado
     totalEnProceso += item.en_proceso
     totalCompletada += item.completada
+    totalPendiente += Math.max(0, item.asignado - item.completada - item.en_proceso)
   }
   return {
     asignado: totalAsignado,
     en_proceso: totalEnProceso,
     completada: totalCompletada,
-    pendiente: Math.max(0, totalAsignado - totalCompletada - totalEnProceso)
+    pendiente: totalPendiente
   }
 })
 
@@ -477,6 +523,40 @@ const totalAlmacen = computed(() => {
 const productosFiltrados = computed(() => {
   return [...productos.value].sort((a, b) => a.name.localeCompare(b.name))
 })
+
+// Detalle de pedidos en proceso
+const detalleProceso = ref([])
+const filaExpandida = ref(null)
+const loadingDetalle = ref(false)
+
+async function toggleDetalle(vendedor, producto_id) {
+  const key = `${vendedor}|${producto_id}`
+  if (filaExpandida.value === key) {
+    filaExpandida.value = null
+    return
+  }
+  filaExpandida.value = key
+  if (detalleProceso.value.length === 0) {
+    loadingDetalle.value = true
+    try {
+      const res = await axios.get(`${API_URL}/detalle-proceso`)
+      detalleProceso.value = res.data.detalle
+    } catch (e) {
+      console.error('Error cargando detalle:', e)
+    } finally {
+      loadingDetalle.value = false
+    }
+  }
+}
+
+function pedidosParaFila(vendedor, producto_id) {
+  const entry = detalleProceso.value.find(d => d.vendedor === vendedor && d.producto_id === producto_id)
+  return entry ? entry.pedidos : []
+}
+
+function esFilaExpandida(vendedor, producto_id) {
+  return filaExpandida.value === `${vendedor}|${producto_id}`
+}
 </script>
 
 <template>
@@ -485,7 +565,7 @@ const productosFiltrados = computed(() => {
     <header class="app-header">
       <div class="header-content">
         <div class="header-title">
-          <span class="logo">📦</span>
+          <span class="logo"><AppIcon name="box" :size="28" /></span>
           <div>
             <h1>Asignación de Productos a Vendedores</h1>
             <p class="subtitle">{{ mesActual }}</p>
@@ -493,10 +573,12 @@ const productosFiltrados = computed(() => {
         </div>
         <div class="header-actions">
           <button @click="showForm = !showForm" class="btn btn-primary btn-lg">
-            <span v-if="!showForm">➕ Nueva Asignación</span>
-            <span v-else>✖ Cancelar</span>
+            <span v-if="!showForm"><AppIcon name="plus" :size="16" /> Nueva Asignación</span>
+            <span v-else><AppIcon name="x" :size="16" /> Cancelar</span>
           </button>
-          <button @click="cargarDatos" class="btn btn-ghost">🔄</button>
+          <button class="btn btn-ghost ref-btn" @click="cargarDatos" :title="hayCambios ? 'Hay cambios disponibles — clic para actualizar' : 'Actualizar datos'">
+            <AppIcon name="refresh" :size="16" /><span v-if="hayCambios" class="ref-badge"></span>
+          </button>
         </div>
       </div>
     </header>
@@ -509,15 +591,15 @@ const productosFiltrados = computed(() => {
 
     <!-- Error -->
     <div v-if="error" class="error-banner">
-      <span>⚠️ {{ error }}</span>
-      <button @click="error = null">✕</button>
+      <span class="error-icon"><AppIcon name="alert" :size="16" /></span> {{ error }}
+      <button @click="error = null"><AppIcon name="x" :size="16" /></button>
     </div>
 
     <main class="main-content">
       <!-- Formulario de nueva asignación -->
       <transition name="slide">
         <div v-if="showForm" class="form-card">
-          <h2>📋 Nueva Asignación</h2>
+          <h2><AppIcon name="clipboard" :size="18" /> Nueva Asignación</h2>
           <form @submit.prevent="crearAsignacion">
             <div class="form-row">
               <div class="form-group">
@@ -534,7 +616,7 @@ const productosFiltrados = computed(() => {
               <div class="form-group calendar-group">
                 <label>Fecha</label>
                 <div class="calendar-input-wrapper" @click="showCalendar = !showCalendar">
-                  <span class="cal-display">📅 {{ nuevaAsignacion.fecha }}</span>
+                  <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ nuevaAsignacion.fecha }}</span>
                 </div>
                 <div v-if="showCalendar" class="calendar-popup" @click.stop>
                   <div class="cal-header">
@@ -572,7 +654,7 @@ const productosFiltrados = computed(() => {
               </div>
             </div>
             <button type="submit" class="btn btn-success btn-block" :disabled="vendedoresSeleccionados.length === 0">
-              💾 Guardar Asignación ({{ vendedoresSeleccionados.length }} vendedor{{ vendedoresSeleccionados.length !== 1 ? 'es' : '' }})
+              <AppIcon name="save" :size="16" /> Guardar Asignación ({{ vendedoresSeleccionados.length }} vendedor{{ vendedoresSeleccionados.length !== 1 ? 'es' : '' }})
             </button>
           </form>
         </div>
@@ -581,28 +663,28 @@ const productosFiltrados = computed(() => {
       <!-- Totales Generales -->
       <div v-if="resumen.length > 0" class="stats-grid">
         <div class="stat-card stat-primary">
-          <div class="stat-icon">📦</div>
+          <div class="stat-icon"><AppIcon name="box" :size="26" /></div>
           <div class="stat-info">
             <span class="stat-label">Total Asignado</span>
             <span class="stat-value">{{ totalesGenerales.asignado }}</span>
           </div>
         </div>
         <div class="stat-card stat-success">
-          <div class="stat-icon">⏳</div>
+          <div class="stat-icon"><AppIcon name="hourglass" :size="26" /></div>
           <div class="stat-info">
             <span class="stat-label">En Proceso</span>
             <span class="stat-value">{{ totalesGenerales.en_proceso }}</span>
           </div>
         </div>
         <div class="stat-card stat-warning">
-          <div class="stat-icon">✅</div>
+          <div class="stat-icon"><AppIcon name="check" :size="26" /></div>
           <div class="stat-info">
             <span class="stat-label">Completado</span>
             <span class="stat-value">{{ totalesGenerales.completada }}</span>
           </div>
         </div>
         <div class="stat-card stat-purple">
-          <div class="stat-icon">📭</div>
+          <div class="stat-icon"><AppIcon name="inbox" :size="26" /></div>
           <div class="stat-info">
             <span class="stat-label">Pendiente</span>
             <span class="stat-value">{{ totalesGenerales.pendiente }}</span>
@@ -617,13 +699,13 @@ const productosFiltrados = computed(() => {
             :class="{ active: seccionActiva === 'resumen' }"
             @click="seccionActiva = 'resumen'"
           >
-            📋 Resumen por Vendedor
+            <AppIcon name="clipboard" :size="14" /> Resumen por Vendedor
           </button>
           <button
             :class="{ active: seccionActiva === 'asignaciones' }"
             @click="seccionActiva = 'asignaciones'"
           >
-            📝 Mis Asignaciones
+            <AppIcon name="edit" :size="14" /> Mis Asignaciones
             <span class="tab-badge">{{ asignaciones.length }}</span>
           </button>
         </div>
@@ -647,13 +729,48 @@ const productosFiltrados = computed(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(prod, prodId) in item.productos" :key="prodId">
-                    <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
-                    <td class="text-right">{{ prod.asignado }}</td>
-                    <td class="text-right warning">{{ prod.en_proceso }}</td>
-                    <td class="text-right success">{{ prod.completada }}</td>
-                    <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
-                  </tr>
+                  <template v-for="(prod, prodId) in item.productos" :key="prodId">
+                    <tr
+                      class="fila-clickeable"
+                      :class="{ 'fila-expandida': esFilaExpandida(item.vendedor, prod.producto_id) }"
+                      @click="toggleDetalle(item.vendedor, prod.producto_id)"
+                    >
+                      <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
+                      <td class="text-right">{{ prod.asignado }}</td>
+                      <td class="text-right warning">{{ prod.en_proceso }}</td>
+                      <td class="text-right success">{{ prod.completada }}</td>
+                      <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
+                    </tr>
+                    <tr v-if="esFilaExpandida(item.vendedor, prod.producto_id)">
+                      <td colspan="5" class="detalle-container">
+                        <div v-if="loadingDetalle" class="detalle-loading">Cargando...</div>
+                        <div v-else-if="pedidosParaFila(item.vendedor, prod.producto_id).length === 0" class="detalle-empty">
+                          No hay pedidos en proceso
+                        </div>
+                        <div v-else class="detalle-pedidos">
+                          <div class="detalle-titulo">Pedidos en proceso ({{ pedidosParaFila(item.vendedor, prod.producto_id).length }})</div>
+                          <table class="detalle-table">
+                            <thead>
+                              <tr>
+                                <th>Folio</th>
+                                <th>Fecha</th>
+                                <th>Cliente</th>
+                                <th class="text-right">Packs</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr v-for="(ped, idx) in pedidosParaFila(item.vendedor, prod.producto_id)" :key="idx">
+                                <td class="folio">{{ ped.folio }}</td>
+                                <td>{{ ped.fecha ? ped.fecha.split('T')[0] : '-' }}</td>
+                                <td>{{ ped.cliente_nombre || '-' }}</td>
+                                <td class="text-right packs-val">{{ ped.packs }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -683,7 +800,7 @@ const productosFiltrados = computed(() => {
                   <td>{{ asig.producto_nombre }}</td>
                   <td class="text-right">{{ asig.cantidad }}</td>
                   <td class="text-center">
-                    <button @click="eliminarAsignacion(asig.id)" class="btn-icon btn-danger" title="Eliminar">🗑️</button>
+                    <button @click="eliminarAsignacion(asig.id)" class="btn-icon btn-danger" title="Eliminar"><AppIcon name="trash" :size="16" /></button>
                   </td>
                 </tr>
               </tbody>
@@ -698,7 +815,7 @@ const productosFiltrados = computed(() => {
       <!-- Stock en Almacén -->
       <section v-if="almacen.length > 0" class="card">
         <div class="card-header">
-          <h2>🏭 Stock en Almacén</h2>
+          <h2><AppIcon name="warehouse" :size="18" /> Stock en Almacén</h2>
           <span class="badge">{{ almacen.length }} productos</span>
         </div>
         <div class="table-wrapper">
@@ -732,7 +849,7 @@ const productosFiltrados = computed(() => {
       <!-- Ventas Registradas -->
       <section v-if="ventas.length > 0" class="card">
         <div class="card-header">
-          <h2>🛒 Ventas Registradas</h2>
+          <h2><AppIcon name="cart" :size="18" /> Ventas Registradas</h2>
           <span class="badge success">${{ totalVentasFiltrado.toFixed(2) }}</span>
         </div>
 
@@ -746,7 +863,7 @@ const productosFiltrados = computed(() => {
           <div v-if="filtroPreset === 'rango'" class="filtro-rango">
             <div class="calendar-group">
               <div class="calendar-input-wrapper" @click="abrirCalRango">
-                <span class="cal-display">📅 {{ filtroFechaDesde ? `${filtroFechaDesde} → ${filtroFechaHasta || filtroFechaDesde}` : 'Elegir fechas' }}</span>
+                <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ filtroFechaDesde ? `${filtroFechaDesde} → ${filtroFechaHasta || filtroFechaDesde}` : 'Elegir fechas' }}</span>
               </div>
               <div v-if="showCalRango" class="calendar-popup" @click.stop>
                 <div class="cal-header">
@@ -808,10 +925,10 @@ const productosFiltrados = computed(() => {
                 <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                 <td v-for="v in matrizVentasTodos.vendedores" :key="v" class="text-right">
                   {{ prod.porVendedor[v] ? prod.porVendedor[v].vendido : 0 }}
-                  <span v-if="prod.porVendedor[v] && prod.porVendedor[v].clientes" class="clientes-mini">👥{{ prod.porVendedor[v].clientes }}</span>
+                  <span v-if="prod.porVendedor[v] && prod.porVendedor[v].clientes" class="clientes-mini"><AppIcon name="users" :size="12" /> {{ prod.porVendedor[v].clientes }}</span>
                 </td>
                 <td class="text-right total-val">{{ prod.cantidadTotal }}</td>
-                <td class="text-right clientes-total">👥 {{ prod.clientes }}</td>
+                <td class="text-right clientes-total"><AppIcon name="users" :size="13" /> {{ prod.clientes }}</td>
               </tr>
             </tbody>
             <tfoot>
@@ -821,7 +938,7 @@ const productosFiltrados = computed(() => {
                   <strong>{{ totalPorVendedorEnMatriz(v) }}</strong>
                 </td>
                 <td class="text-right total-val"><strong>{{ totalVentasUnidades }}</strong></td>
-                <td class="text-right clientes-total"><strong>👥 {{ totalClientesMatriz }}</strong></td>
+                <td class="text-right clientes-total"><strong><AppIcon name="users" :size="13" /> {{ totalClientesMatriz }}</strong></td>
               </tr>
             </tfoot>
           </table>
@@ -833,7 +950,7 @@ const productosFiltrados = computed(() => {
           <div class="venta-header">
             <span class="vendedor-avatar">{{ item.vendedor.charAt(0) }}</span>
             <h3>{{ item.vendedor }}</h3>
-            <span class="venta-clientes">👥 {{ item.clientes }} {{ item.clientes === 1 ? 'cliente' : 'clientes' }}</span>
+            <span class="venta-clientes"><AppIcon name="users" :size="14" /> {{ item.clientes }} {{ item.clientes === 1 ? 'cliente' : 'clientes' }}</span>
             <span class="venta-total">${{ Object.values(item.productos).reduce((s, p) => s + p.total, 0).toFixed(2) }}</span>
           </div>
           <table class="mini-table">
@@ -851,7 +968,7 @@ const productosFiltrados = computed(() => {
                 <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                 <td class="text-right">${{ prod.precio.toFixed(2) }}</td>
                 <td class="text-right">{{ prod.vendido }}</td>
-                <td class="text-right">👥 {{ prod.clientes }}</td>
+                <td class="text-right"><AppIcon name="users" :size="13" /> {{ prod.clientes }}</td>
                 <td class="text-right total-val">${{ prod.total.toFixed(2) }}</td>
               </tr>
             </tbody>
@@ -860,7 +977,7 @@ const productosFiltrados = computed(() => {
         </div>
 
         <div v-if="vendedorSeleccionado && ventasFiltradas.length === 0" class="empty-state">
-          <span class="empty-icon">📭</span>
+          <span class="empty-icon"><AppIcon name="inbox" :size="40" /></span>
           <p>No hay ventas para este vendedor</p>
         </div>
       </section>
@@ -999,6 +1116,27 @@ body {
   background: rgba(255,255,255,0.25);
 }
 
+.ref-btn {
+  position: relative;
+}
+
+.ref-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 12px;
+  height: 12px;
+  background: var(--danger);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  animation: refPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes refPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.7; }
+}
+
 .btn-success {
   background: var(--success);
   color: white;
@@ -1113,7 +1251,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   border-radius: var(--radius);
+}
+
+.error-banner .error-icon,
+.error-banner svg {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
 }
 
 .error-banner button {
@@ -1449,6 +1595,7 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
   padding: 20px 24px;
+  align-items: start;
 }
 
 .vendedor-card {
@@ -1627,6 +1774,9 @@ body {
 
 .cal-display {
   user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .calendar-popup {
@@ -1835,10 +1985,15 @@ body {
   font-size: 13px;
   font-weight: 600;
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .clientes-mini {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   color: var(--primary);
   font-weight: 600;
@@ -1878,5 +2033,86 @@ body {
 
 .empty-state-large p {
   color: var(--text-light);
+}
+
+/* Detalle de pedidos en proceso */
+.fila-clickeable {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.fila-clickeable:hover {
+  background: #f0f4ff;
+}
+
+.fila-clickeable.fila-expandida {
+  background: #eef2ff;
+}
+
+.detalle-container {
+  padding: 0 !important;
+  background: #f8fafc;
+  border-top: 1px dashed var(--border) !important;
+}
+
+.detalle-loading,
+.detalle-empty {
+  padding: 12px 20px;
+  font-size: 12px;
+  color: var(--text-light);
+  font-style: italic;
+}
+
+.detalle-pedidos {
+  padding: 8px 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.detalle-titulo {
+  padding: 4px 20px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--primary);
+}
+
+.detalle-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+}
+
+.detalle-table th {
+  padding: 6px 20px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-light);
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+}
+
+.detalle-table td {
+  padding: 6px 20px;
+  font-size: 12px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.detalle-table tbody tr:hover {
+  background: #eef2ff;
+}
+
+.detalle-table .folio {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.detalle-table .packs-val {
+  font-weight: 700;
+  color: var(--warning);
 }
 </style>

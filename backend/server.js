@@ -103,7 +103,7 @@ async function apiGet(path) {
 async function fetchAllOrders(desde, hasta) {
   const allOrders = [];
   let page = 1;
-  const limit = 100;
+  const limit = 1000;
   let totalPages = 1;
 
   while (page <= totalPages) {
@@ -389,6 +389,52 @@ app.get('/api/clientes-por-vendedor', async (req, res) => {
   try {
     const data = await apiGet('/clientes/por-vendedor');
     res.json({ vendedores: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/detalle-proceso — detalle de pedidos en_proceso por vendedor+producto
+app.get('/api/detalle-proceso', async (req, res) => {
+  try {
+    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+
+    // Despachos reales para saber qué folios ya se despacharon
+    const conn = await getConnection();
+    const [rows] = await conn.query(`
+      SELECT o.Note FROM operations o
+      WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
+      AND o.Sign = -1 AND Note LIKE '%V-%'
+    `);
+    await conn.end();
+    const foliosDespachados = new Set();
+    for (const row of rows) {
+      const m = row.Note.match(/(?:^|;)P-([A-Z0-9\-]+);/i);
+      if (m) foliosDespachados.add(m[1].toUpperCase());
+    }
+
+    const result = {};
+    for (const o of orders) {
+      if (o.estado !== 'en_proceso') continue;
+      if (!o.folio) continue;
+      if (foliosDespachados.has(o.folio.toUpperCase())) continue;
+      const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
+      if (!vendedor) continue;
+      for (const it of (o.items || [])) {
+        const key = `${vendedor}|${it.codigo}`;
+        if (!result[key]) {
+          result[key] = { vendedor, producto_id: it.codigo, pedidos: [] };
+        }
+        result[key].pedidos.push({
+          folio: o.folio,
+          producto_codigo: it.codigo,
+          packs: it.packs || 0,
+          fecha: o.fecha || null,
+          cliente_nombre: o.cliente?.nombre || null
+        });
+      }
+    }
+    res.json({ detalle: Object.values(result) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
