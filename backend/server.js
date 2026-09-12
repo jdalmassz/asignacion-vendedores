@@ -606,6 +606,7 @@ async function computeResumen() {
    */
   const orders = await fetchAllOrders(...rangoDelMes());
   const procesoMap = {};
+  const cerradoSinFacturaMap = {};
 
   for (const o of orders) {
     if (o.estado === 'expirada') continue;
@@ -615,6 +616,17 @@ async function computeResumen() {
     const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
     if (!vendedor) continue;
 
+    /*
+     * CERRADO SIN FACTURA no es EN PROCESO.
+     *
+     * Un pedido que PEDIDO dio por `completada` y que Ventra nunca facturó está
+     * cerrado: no va a salir solo, nadie lo está preparando. Contarlo como "en proceso"
+     * dice que hay trabajo en marcha donde lo que hay es un agujero.
+     *
+     * del 9 de septiembre ya cerrados, comprobados el día 10 y sin factura. Este mes son
+     */
+    const cerradoSinFactura = o.estado === 'completada';
+
     for (const it of (o.items || [])) {
       const goodId = goodIdFromItem(it, goodsIndex);
       if (!goodId) continue;
@@ -622,7 +634,9 @@ async function computeResumen() {
       const key = `${vendedor}|${goodId}`;
       if (!asignInfo[key]) continue;
 
-      procesoMap[key] = (procesoMap[key] || 0) + (it.packs || 0);
+      const donde = cerradoSinFactura ? cerradoSinFacturaMap : procesoMap;
+
+      donde[key] = (donde[key] || 0) + (it.packs || 0);
     }
   }
 
@@ -659,6 +673,7 @@ async function computeResumen() {
     const pedidoOriginal = pedidoMap[clave] || 0;
 
     const enProceso = procesoMap[key] || 0;
+    const cerradoSinFactura = cerradoSinFacturaMap[key] || 0;
     resumen.push({
       vendedor: info.vendedor,
       producto_id: info.producto_id,
@@ -666,6 +681,8 @@ async function computeResumen() {
       producto_nombre: info.producto_nombre,
       asignado,
       en_proceso: enProceso,
+      /** Pedidos que PEDIDO cerró y Ventra nunca facturó. Ni salieron ni van a salir. */
+      cerrado_sin_factura: cerradoSinFactura,
       /** Lo que PIDIERON los clientes de esto, para comparar contra lo facturado. */
       pedido: pedidoOriginal,
       /** De lo despachado, cuánto salió con una factura distinta de lo pedido. */
@@ -782,6 +799,8 @@ async function computeDetalleProceso() {
         packs: it.packs || 0,
         fecha: o.fecha || null,
         cliente_nombre: o.cliente?.nombre || null,
+        // Cerrado en PEDIDO y sin factura en Ventra: ni salió ni va a salir solo.
+        cerrado_sin_factura: o.estado === 'completada',
         facturado,
         // `igual` o `cambiado`, para poder distinguir en pantalla el pedido que se
         // facturó tal cual del que se facturó con cambios.
