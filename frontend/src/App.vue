@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, onBeforeUnmount, computed, nextTick, watch } from 'vue'
 import axios from 'axios'
 import AppIcon from './components/AppIcon.vue'
 
@@ -60,6 +60,22 @@ function cuentaSeccion(id) {
   if (id === 'ventas') return ventas.value.length
 
   return null
+}
+
+const pistaSecciones = ref(null)
+
+/**
+ * Traer la sección activa a la vista del deslizador.
+ *
+ * En el móvil la pista sólo enseña una sección a la vez. Sin esto la pista se queda
+ * donde estaba: se entraba en Ventas y arriba seguía poniendo "Resumen" con el punto
+ * de la cuarta encendido, o sea el rótulo diciendo una cosa y el contenido otra.
+ */
+function centrarSeccion() {
+  nextTick(() => {
+    const el = pistaSecciones.value?.querySelector('button.active')
+    el?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' })
+  })
 }
 
 /** Pasa a la sección de al lado. No da la vuelta: en el extremo la flecha se apaga. */
@@ -589,6 +605,8 @@ const ventasPorVendedorFiltrado = computed(() => {
     }))
 })
 
+watch(seccionActiva, centrarSeccion)
+
 // Matriz ventas "Todos": productos por fila, vendedores por columna
 const matrizVentasTodos = computed(() => {
   const vendedores = ventasPorVendedorFiltrado.value
@@ -622,6 +640,40 @@ const matrizVentasTodos = computed(() => {
     filas: Object.values(productosMap).sort((a, b) => a.producto_nombre.localeCompare(b.producto_nombre))
   }
 })
+
+/**
+ * Nombre y primer apellido.
+ *
+ * "ERNESTO RODRIGUEZ CASTELLANOS" no cabe en una lista de 250 px y se cortaba en
+ * "ERNESTO RODRI…", que es peor que no ponerlo: dos vendedores pueden compartir el
+ * trozo visible. Con nombre y apellido se distinguen, y el completo queda en el
+ * título y en la cabecera del detalle.
+ */
+function nombreCortoVendedor(nombre) {
+  const partes = String(nombre || '').trim().split(/\s+/).filter(Boolean)
+  if (partes.length <= 2) return partes.join(' ')
+  return `${partes[0]} ${partes[1]}`
+}
+
+/** Lo que lleva vendido un vendedor, para poder ordenarlos por eso en la lista. */
+function importeDe(v) {
+  return Object.values(v.productos).reduce((t, p) => t + p.total, 0)
+}
+
+/**
+ * Los vendedores de la lista, de más a menos vendido.
+ *
+ * Por orden alfabético el primero de la lista no dice nada; por importe, la lista
+ * misma es el dato: quién vende y quién no se ve sin abrir a nadie.
+ */
+const vendedoresPorImporte = computed(() =>
+  [...ventasPorVendedorFiltrado.value].sort((a, b) => importeDe(b) - importeDe(a))
+)
+
+/** La suma de todos, para la fila "Todos" de la lista. */
+const totalTodosVendedores = computed(() =>
+  ventasPorVendedorFiltrado.value.reduce((t, v) => t + importeDe(v), 0)
+)
 
 // Total de ventas filtradas
 const totalVentasFiltrado = computed(() => {
@@ -687,15 +739,27 @@ const productosFiltrados = computed(() => {
 // Detalle de pedidos en proceso
 const detalleProceso = ref([])
 const filaExpandida = ref(null)
+/** De qué vendedor y producto es el detalle que está abierto. */
+const detalleDe = ref(null)
 const loadingDetalle = ref(false)
 
-async function toggleDetalle(vendedor, producto_id) {
+/**
+ * Abre el detalle de una fila.
+ *
+ * El detalle sale FUERA de la tarjeta: en escritorio como ventana, en móvil como
+ * cajón que sube desde abajo. Cuando se abría dentro, la tarjeta crecía y con ella
+ * toda la fila de la rejilla, así que abrir un producto dejaba dos huecos enormes a
+ * los lados y empujaba hacia abajo a los vendedores siguientes. Ver un pedido no
+ * puede mover de sitio lo demás.
+ */
+async function toggleDetalle(vendedor, producto_id, producto_nombre) {
   const key = `${vendedor}|${producto_id}`
   if (filaExpandida.value === key) {
     filaExpandida.value = null
     return
   }
   filaExpandida.value = key
+  detalleDe.value = { vendedor, producto_id, producto_nombre }
   if (detalleProceso.value.length === 0) {
     loadingDetalle.value = true
     try {
@@ -717,6 +781,56 @@ function pedidosParaFila(vendedor, producto_id) {
 function esFilaExpandida(vendedor, producto_id) {
   return filaExpandida.value === `${vendedor}|${producto_id}`
 }
+
+/**
+ * Elegir vendedor.
+ *
+ * Ya no hace falta traer nada a la vista: en pantalla ancha los diez están en la
+ * lista, y en estrecha el desplegable lo abre el propio teléfono.
+ */
+function elegirVendedor(nombre) {
+  vendedorSeleccionado.value = nombre
+}
+
+function cerrarDetalle() {
+  filaExpandida.value = null
+}
+
+/**
+ * Con el cajón abierto, la página de detrás no se mueve.
+ *
+ * Sin esto, al arrastrar dentro del cajón el dedo acaba moviendo la página de debajo:
+ * el cajón se queda quieto y el fondo se va, que es exactamente la sensación de que
+ * "no sale" o de que está roto. Se guarda lo que hubiera puesto antes en vez de dar
+ * por hecho que era `visible`.
+ */
+let desplazamientoAnterior = ''
+
+watch(filaExpandida, (abierto) => {
+  if (abierto) {
+    desplazamientoAnterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  } else {
+    document.body.style.overflow = desplazamientoAnterior
+  }
+})
+
+onBeforeUnmount(() => {
+  document.body.style.overflow = desplazamientoAnterior
+})
+
+/**
+ * Escape cierra.
+ *
+ * Es lo primero que prueba cualquiera con una ventana abierta delante, y si no
+ * responde parece que se ha quedado colgada.
+ */
+function teclaDetalle(e) {
+  if (e.key === 'Escape' && filaExpandida.value) cerrarDetalle()
+}
+
+onMounted(() => window.addEventListener('keydown', teclaDetalle))
+onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
 </script>
 
 <template>
@@ -871,7 +985,7 @@ function esFilaExpandida(vendedor, producto_id) {
             <AppIcon name="chevronLeft" :size="16" />
           </button>
 
-          <div class="tabs-pista">
+          <div ref="pistaSecciones" class="tabs-pista">
             <button
               v-for="(s, i) in SECCIONES"
               :key="s.id"
@@ -938,7 +1052,7 @@ function esFilaExpandida(vendedor, producto_id) {
                     type="button"
                     class="producto-cabeza"
                     :aria-expanded="esFilaExpandida(item.vendedor, prod.producto_id)"
-                    @click="toggleDetalle(item.vendedor, prod.producto_id)"
+                    @click="toggleDetalle(item.vendedor, prod.producto_id, prod.producto_nombre)"
                   >
                     <span class="producto-nombre">{{ nombreCorto(prod.producto_nombre) }}</span>
                     <span class="producto-cifra">
@@ -970,48 +1084,6 @@ function esFilaExpandida(vendedor, producto_id) {
                     >De más <b>{{ tramosDe(prod).deMas }}</b></span>
                   </p>
 
-                  <div v-if="esFilaExpandida(item.vendedor, prod.producto_id)" class="detalle">
-                    <p v-if="loadingDetalle" class="detalle-aviso">Cargando…</p>
-                    <p v-else-if="pedidosParaFila(item.vendedor, prod.producto_id).length === 0" class="detalle-aviso">
-                      No queda ningún pedido por despachar de este producto
-                    </p>
-                    <template v-else>
-                      <div class="detalle-titulo">
-                        Pedidos sin despachar ({{ pedidosParaFila(item.vendedor, prod.producto_id).length }})
-                      </div>
-                      <ul class="pedido-lista">
-                        <li v-for="(ped, idx) in pedidosParaFila(item.vendedor, prod.producto_id)" :key="idx" class="pedido">
-                          <span class="pedido-folio">{{ ped.folio }}</span>
-                          <span class="pedido-cliente">{{ ped.cliente_nombre || 'Sin cliente' }}</span>
-                          <span class="pedido-fecha">{{ ped.fecha ? ped.fecha.split('T')[0] : '—' }}</span>
-                          <span class="pedido-packs">{{ ped.packs }}</span>
-                          <span class="pedido-estado">
-                            <span
-                              v-if="ped.factura_estado === 'cambiado'"
-                              class="sello s-cambiado"
-                              :title="ped.factura ? `Factura ${ped.factura}: se facturó algo distinto de lo pedido` : 'Se facturó algo distinto de lo pedido'"
-                            >Facturó y cambió</span>
-                            <span
-                              v-else-if="ped.facturado"
-                              class="sello s-facturado"
-                              :title="ped.factura ? `Factura ${ped.factura}` : 'Facturado'"
-                            >Facturado</span>
-                            <span v-else class="sello s-proceso">Sin factura</span>
-                            <span
-                              v-if="ped.cobrado_vendedor"
-                              class="sello s-cobrado"
-                              title="El vendedor lo declaró cobrado. Es otra cosa que estar facturado."
-                            >Cobrado</span>
-                            <span
-                              v-if="ped.cobrado_manual"
-                              class="sello s-manual"
-                              title="Marcado a mano desde esta aplicación"
-                            >Marcado</span>
-                          </span>
-                        </li>
-                      </ul>
-                    </template>
-                  </div>
                 </li>
               </ul>
             </article>
@@ -1084,9 +1156,21 @@ function esFilaExpandida(vendedor, producto_id) {
             <tbody>
               <tr v-for="item in matrizAlmacen.productos" :key="item.producto_id">
                 <td>{{ item.nombre }}</td>
-                <td class="text-right">${{ item.precio.toFixed(2) }}</td>
-                <td v-for="a in almacen" :key="a.almacen" class="text-right stock-val">{{ item.porAlmacen[a.almacen] || 0 }}</td>
-                <td class="text-right stock-val">{{ item.stock }}</td>
+                <!-- Un producto que no se ha vendido en 90 días no tiene precio en
+                     Ventra. "$0.00" se lee como "vale cero"; sin precio es lo que es. -->
+                <td class="text-right" :class="{ 'sin-precio': !item.precio }">
+                  {{ item.precio ? `$${item.precio.toFixed(2)}` : 'sin precio' }}
+                </td>
+                <!-- El cero se apaga: en una tabla de diez almacenes, si todos los
+                     números pesan lo mismo hay que leerlos uno a uno para ver dónde
+                     hay mercancía de verdad. -->
+                <td
+                  v-for="a in almacen"
+                  :key="a.almacen"
+                  class="text-right stock-val"
+                  :class="{ 'stock-cero': !item.porAlmacen[a.almacen] }"
+                >{{ item.porAlmacen[a.almacen] || 0 }}</td>
+                <td class="text-right stock-val stock-total">{{ item.stock }}</td>
               </tr>
             </tbody>
           </table>
@@ -1110,7 +1194,7 @@ function esFilaExpandida(vendedor, producto_id) {
           <div v-if="filtroPreset === 'rango'" class="filtro-rango">
             <div class="calendar-group">
               <div class="calendar-input-wrapper" @click="abrirCalRango">
-                <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ filtroFechaDesde ? `${filtroFechaDesde} → ${filtroFechaHasta || filtroFechaDesde}` : 'Elegir fechas' }}</span>
+                <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ filtroFechaDesde ? `${filtroFechaDesde} — ${filtroFechaHasta || filtroFechaDesde}` : 'Elegir fechas' }}</span>
               </div>
               <div v-if="showCalRango" class="calendar-popup" @click.stop>
                 <div class="cal-header">
@@ -1138,24 +1222,62 @@ function esFilaExpandida(vendedor, producto_id) {
           </div>
         </div>
 
-        <!-- Tabs de vendedores -->
-        <div class="vendedor-tabs">
-          <button
-            :class="{ active: !vendedorSeleccionado }"
-            @click="vendedorSeleccionado = ''"
-          >
-            🧑‍🤝‍🧑 Todos
-          </button>
-          <button
-            v-for="v in ventasPorVendedorFiltrado"
-            :key="v.vendedor"
-            :class="{ active: vendedorSeleccionado === v.vendedor }"
-            @click="vendedorSeleccionado = v.vendedor"
-          >
-            {{ v.vendedor.split(' ')[0] }} {{ v.vendedor.split(' ').slice(-1)[0] }}
-          </button>
-        </div>
+        <!--
+          Elegir vendedor.
 
+          Antes era una fila de fichas. Con diez vendedores se partía en dos filas y
+          empujaba la tabla; puesta en una sola línea había que arrastrarla para ver
+          los últimos. Ninguna de las dos sirve cuando la lista crece.
+
+          En pantalla ancha va como lista a un lado: caben los diez a la vez, cada uno
+          con su importe, y la lista por sí sola ya dice quién vende y quién no. En
+          pantalla estrecha, un desplegable del propio teléfono: una línea, sin
+          arrastrar, y da igual que sean diez que cuarenta.
+        -->
+        <div class="ventas-cuerpo">
+          <div class="ventas-lado">
+            <label class="lado-etiqueta" for="elegir-vendedor">Vendedor</label>
+
+            <select
+              id="elegir-vendedor"
+              class="lado-select"
+              :value="vendedorSeleccionado"
+              @change="elegirVendedor($event.target.value)"
+            >
+              <option value="">Todos los vendedores</option>
+              <option v-for="v in vendedoresPorImporte" :key="v.vendedor" :value="v.vendedor">
+                {{ v.vendedor }} — ${{ importeDe(v).toFixed(2) }}
+              </option>
+            </select>
+
+            <ul class="lado-lista">
+              <li>
+                <button
+                  type="button"
+                  :class="{ active: !vendedorSeleccionado }"
+                  @click="elegirVendedor('')"
+                >
+                  <AppIcon name="users" :size="14" />
+                  <span class="lado-nombre">Todos</span>
+                  <span class="lado-importe">${{ totalTodosVendedores.toFixed(2) }}</span>
+                </button>
+              </li>
+              <li v-for="v in vendedoresPorImporte" :key="v.vendedor">
+                <button
+                  type="button"
+                  :class="{ active: vendedorSeleccionado === v.vendedor }"
+                  :title="v.vendedor"
+                  @click="elegirVendedor(v.vendedor)"
+                >
+                  <span class="lado-inicial">{{ inicialesDe(v.vendedor) }}</span>
+                  <span class="lado-nombre">{{ nombreCortoVendedor(v.vendedor) }}</span>
+                  <span class="lado-importe">${{ importeDe(v).toFixed(2) }}</span>
+                </button>
+              </li>
+            </ul>
+          </div>
+
+          <div class="ventas-detalle">
         <!-- Matriz cuando está "Todos" -->
         <div v-if="!vendedorSeleccionado" class="matriz-ventas">
           <table class="mini-table">
@@ -1200,7 +1322,10 @@ function esFilaExpandida(vendedor, producto_id) {
             <span class="venta-clientes"><AppIcon name="users" :size="14" /> {{ item.clientes }} {{ item.clientes === 1 ? 'cliente' : 'clientes' }}</span>
             <span class="venta-total">${{ Object.values(item.productos).reduce((s, p) => s + p.total, 0).toFixed(2) }}</span>
           </div>
-          <table class="mini-table">
+          <!-- En una pantalla de 390 px estas cinco columnas no caben y la de Total
+               quedaba cortada por el borde, sin forma de llegar a ella. -->
+          <div class="table-wrapper">
+          <table class="mini-table tabla-vendedor">
             <thead>
               <tr>
                 <th>Producto</th>
@@ -1221,15 +1346,81 @@ function esFilaExpandida(vendedor, producto_id) {
             </tbody>
           </table>
           </div>
+          </div>
         </div>
 
         <div v-if="vendedorSeleccionado && ventasFiltradas.length === 0" class="empty-state">
           <span class="empty-icon"><AppIcon name="inbox" :size="40" /></span>
           <p>No hay ventas para este vendedor</p>
         </div>
+          </div>
+        </div>
       </section>
 
     </main>
+      <!-- El detalle de una fila: ventana en escritorio, cajón en móvil. Fuera de la
+         rejilla, para que abrirlo no mueva de sitio a los demás vendedores. -->
+    <Teleport to="body">
+      <div v-if="filaExpandida && detalleDe" class="capa" @click.self="cerrarDetalle">
+        <div class="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo">
+          <!-- El asa sólo se ve en el móvil: es lo que dice que esto es un cajón y
+               que se cierra tirando hacia abajo. -->
+          <span class="hoja-asa" aria-hidden="true"></span>
+          <header class="hoja-cabeza">
+            <div class="hoja-quien">
+              <p id="hoja-titulo">{{ nombreCorto(detalleDe.producto_nombre) }}</p>
+              <p class="hoja-vendedor">{{ detalleDe.vendedor }}</p>
+            </div>
+            <button type="button" class="hoja-cerrar" aria-label="Cerrar" @click="cerrarDetalle">
+              <AppIcon name="x" :size="18" />
+            </button>
+          </header>
+
+          <div class="hoja-cuerpo">
+            <p v-if="loadingDetalle" class="detalle-aviso">Cargando…</p>
+            <p v-else-if="pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id).length === 0" class="detalle-aviso">
+              No queda ningún pedido por despachar de este producto
+            </p>
+            <template v-else>
+              <div class="detalle-titulo">
+                Pedidos sin despachar ({{ pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id).length }})
+              </div>
+              <ul class="pedido-lista">
+                <li v-for="(ped, idx) in pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id)" :key="idx" class="pedido">
+                  <span class="pedido-folio">{{ ped.folio }}</span>
+                  <span class="pedido-cliente">{{ ped.cliente_nombre || 'Sin cliente' }}</span>
+                  <span class="pedido-packs">{{ ped.packs }}</span>
+                  <span class="pedido-fecha">{{ ped.fecha ? ped.fecha.split('T')[0] : '—' }}</span>
+                  <span class="pedido-estado">
+                    <span
+                      v-if="ped.factura_estado === 'cambiado'"
+                      class="sello s-cambiado"
+                      :title="ped.factura ? `Factura ${ped.factura}: se facturó algo distinto de lo pedido` : 'Se facturó algo distinto de lo pedido'"
+                    >Facturó y cambió</span>
+                    <span
+                      v-else-if="ped.facturado"
+                      class="sello s-facturado"
+                      :title="ped.factura ? `Factura ${ped.factura}` : 'Facturado'"
+                    >Facturado</span>
+                    <span v-else class="sello s-proceso">Sin factura</span>
+                    <span
+                      v-if="ped.cobrado_vendedor"
+                      class="sello s-cobrado"
+                      title="El vendedor lo declaró cobrado. Es otra cosa que estar facturado."
+                    >Cobrado</span>
+                    <span
+                      v-if="ped.cobrado_manual"
+                      class="sello s-manual"
+                      title="Marcado a mano desde esta aplicación"
+                    >Marcado</span>
+                  </span>
+                </li>
+              </ul>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1768,10 +1959,16 @@ body {
 
 .data-table th,
 .data-table td {
-  padding: 14px 20px;
-  text-align: left;
+  padding: 11px 20px;
   font-size: 13px;
 }
+
+/*
+ * Ojo con esto: `.data-table td { text-align: left }` pesa más que `.text-right`, así
+ * que ponerlo aquí dejaba sin efecto todos los `text-right` de las plantillas y las
+ * cantidades salían pegadas a la izquierda de una celda anchísima. Izquierda ya es lo
+ * que hace el navegador solo; no hacía falta escribirlo.
+ */
 
 .data-table th {
   background: var(--bg);
@@ -1805,6 +2002,7 @@ body {
 
 .text-right {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .text-center {
@@ -1814,6 +2012,25 @@ body {
 .stock-val {
   color: var(--primary);
   font-weight: 600;
+}
+
+.sin-precio {
+  color: var(--text-light);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.stock-cero {
+  color: var(--text-light);
+  font-weight: 400;
+  opacity: 0.45;
+}
+
+/* La suma de todos los almacenes: es de otro orden que las columnas de al lado. */
+.stock-total {
+  color: var(--text);
+  font-weight: 700;
+  border-left: 1px solid var(--border);
 }
 
 .unidad-val {
@@ -1847,7 +2064,6 @@ body {
 .mini-table th,
 .mini-table td {
   padding: 10px 16px;
-  text-align: left;
   font-size: 13px;
 }
 
@@ -2199,37 +2415,18 @@ body {
 }
 
 /* Vendedor Tabs */
-.vendedor-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.vendedor-tabs button {
-  padding: 8px 16px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
-  color: var(--text);
-}
-
-.vendedor-tabs button:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
-.vendedor-tabs button.active {
-  background: var(--primary);
-  color: white;
-  border-color: var(--primary);
-}
-
+/*
+ * Los vendedores, en una sola línea que rueda.
+ *
+ * Con `flex-wrap: wrap` diez vendedores ocupaban dos filas y quince ocuparían tres:
+ * el bloque cambia de alto según cuántos haya y empuja la tabla hacia abajo cada vez
+ * que se filtra por fecha y cambia la lista. Una línea que rueda mide siempre lo
+ * mismo, y aquí hay diez vendedores por sucursal.
+ *
+ * El degradado del borde derecho es lo que dice que hay más a la derecha; sin él, en
+ * una pantalla donde justo caben ocho, nadie va a probar a arrastrar.
+ */
+/* El degradado sólo del lado donde queda algo por ver. */
 /* Venta Card */
 .venta-card {
   border-bottom: 1px solid var(--border);
@@ -2385,10 +2582,23 @@ body {
   justify-content: center;
   /* 44 px es el mínimo para que un dedo acierte sin pelearse. */
   width: 44px;
+  /*
+   * Sin este `padding: 0` la flecha se ve como una rayita.
+   *
+   * `.seccion-tabs button` —la regla de las pestañas— le mete 20 px de relleno a cada
+   * lado, así que dentro de un botón de 44 px le quedaban 4 px al icono y el chevron
+   * salía aplastado: 4 de ancho por 16 de alto.
+   */
+  padding: 0;
   border: none;
   background: none;
   color: var(--text-light);
   cursor: pointer;
+}
+
+/* Y que el icono no encoja aunque le falte sitio: antes se deformaba en silencio. */
+.seccion-tabs .tab-flecha svg {
+  flex: none;
 }
 
 .tab-flecha:disabled {
@@ -2681,7 +2891,8 @@ body {
 }
 
 .producto.abierto {
-  background: color-mix(in srgb, var(--primary) 4%, transparent);
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+  box-shadow: inset 3px 0 0 var(--primary);
 }
 
 .producto-cabeza {
@@ -2922,6 +3133,418 @@ body {
   color: var(--text-light);
   border-color: var(--border);
   background: none;
+}
+
+/* ==========================================================================
+   LA VENTANA DEL DETALLE
+
+   Ventana centrada en escritorio, cajón que sube desde abajo en el móvil. La regla
+   de la casa en todos los proyectos de Procovar.
+
+   La ✕ está siempre visible, pegada arriba mientras la lista rueda por debajo: en
+   una lista larga, si la ✕ se va con el desplazamiento hay que subir a buscarla
+   para poder cerrar.
+   ========================================================================== */
+
+.capa {
+  position: fixed;
+  inset: 0;
+  /* `dvh` y no `vh`: en el móvil la barra del navegador aparece y desaparece, y con
+     `vh` el cajón se queda cortado por debajo del borde justo cuando la barra está. */
+  height: 100dvh;
+  z-index: 200;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+/* El asa no pinta nada en una ventana de escritorio. */
+.hoja-asa {
+  display: none;
+}
+
+.hoja {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  width: min(560px, 100%);
+  /* Tope de alto: la lista rueda por dentro y la ventana no se come la pantalla. */
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.hoja-cabeza {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.hoja-quien {
+  flex: 1;
+  min-width: 0;
+}
+
+.hoja-quien p {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.hoja-vendedor {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 500 !important;
+  color: var(--text-light);
+}
+
+.hoja-cerrar {
+  flex: none;
+  /* 40 px: la ✕ es lo que más se toca de una ventana y tiene que acertarse. */
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+.hoja-cerrar:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.hoja-cerrar:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.hoja-cuerpo {
+  padding: 14px 16px 18px;
+  overflow-y: auto;
+}
+
+/* --- En el móvil, cajón ---------------------------------------------------
+   Una ventana centrada en una pantalla de 360 px queda pegada a los cuatro bordes
+   y el pulgar no llega arriba del todo. El cajón sube desde donde está la mano. */
+@media (max-width: 640px) {
+  .capa {
+    padding: 0;
+    place-items: end stretch;
+  }
+
+  .hoja {
+    width: 100%;
+    max-height: 85dvh;
+    /*
+     * Un mínimo, porque un cajón de 110 px con dos líneas dentro parece un trozo de
+     * algo asomando por el borde y no una hoja que ha subido.
+     */
+    min-height: 200px;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    animation: cajon-sube 0.22s ease-out;
+  }
+
+  .hoja-asa {
+    display: block;
+    width: 40px;
+    height: 4px;
+    margin: 8px auto 0;
+    border-radius: 99px;
+    background: var(--border);
+    flex: none;
+  }
+
+  .hoja-cabeza {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+  }
+}
+
+@keyframes cajon-sube {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hoja {
+    animation: none;
+  }
+}
+
+/*
+ * Las columnas de esta tabla no se aprietan más de la cuenta: por debajo de su ancho
+ * mínimo la caja rueda. Es preferible arrastrar a leer "PARRANDA / 500 / ML / BLISTER
+ * / 6U" en cinco líneas.
+ */
+.tabla-vendedor {
+  min-width: 480px;
+}
+
+.tabla-vendedor td:first-child,
+.tabla-vendedor th:first-child {
+  min-width: 190px;
+}
+
+/* ==========================================================================
+   VENTAS: ELEGIR VENDEDOR
+
+   Dos columnas en pantalla ancha —la lista y el detalle—, una sola columna con un
+   desplegable del teléfono cuando no hay sitio. El corte está en 900 px: por debajo,
+   240 px de lista dejan la tabla en menos de 600 y las columnas se aprietan.
+   ========================================================================== */
+
+.ventas-cuerpo {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+
+.ventas-lado {
+  border-right: 1px solid var(--border);
+  padding: 14px 0 14px 12px;
+  /* Diez vendedores caben; cuarenta ruedan aquí dentro, no en la página. */
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.lado-etiqueta {
+  display: block;
+  padding: 0 12px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-light);
+}
+
+/* El desplegable es sólo para pantallas estrechas. */
+.lado-select {
+  display: none;
+}
+
+.lado-lista {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lado-lista button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.lado-lista button:hover {
+  background: var(--bg);
+}
+
+.lado-lista button.active {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.lado-lista button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.lado-inicial {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* El nombre cede sitio al importe, que es lo que no puede cortarse. */
+.lado-nombre {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lado-importe {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.lado-lista button.active .lado-importe {
+  color: var(--primary);
+}
+
+.ventas-detalle {
+  min-width: 0;
+}
+
+/* --- Estrecho: una columna y desplegable ---------------------------------- */
+@media (max-width: 900px) {
+  .ventas-cuerpo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ventas-lado {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .lado-etiqueta {
+    padding: 0 0 6px;
+  }
+
+  .lado-select {
+    display: block;
+    width: 100%;
+    /* 44 px: es un control que se toca con el dedo. */
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .lado-lista {
+    display: none;
+  }
+}
+
+/* ==========================================================================
+   EL SELECTOR DE SECCIÓN, DISTINTO EN CADA TAMAÑO
+
+   No es el mismo control estirado tres veces: en cada ancho hay sitio para cosas
+   distintas y conviene aprovecharlo.
+
+     móvil     deslizador de una sección, con flechas y puntos
+     tableta   control segmentado: las cuatro a la vez, compactas, en una cápsula
+     pantalla  pestañas con subrayado, icono, nombre y contador
+
+   El móvil está definido más abajo, en su corte de 640. Aquí van las otras dos.
+   ========================================================================== */
+
+/* --- Tableta: control segmentado (641–1024) ------------------------------- */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .seccion-tabs {
+    padding: 10px 16px;
+    /* La cápsula ya separa el control de lo de abajo; la raya sobraba. */
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tabs-pista {
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg);
+    border-radius: 10px;
+  }
+
+  .seccion-tabs button {
+    flex: 1 1 0;
+    justify-content: center;
+    padding: 9px 8px;
+    font-size: 13px;
+    border-bottom: 0;
+    margin-bottom: 0;
+    border-radius: 8px;
+  }
+
+  .seccion-tabs button.active {
+    background: var(--surface);
+    color: var(--primary);
+    font-weight: 650;
+    box-shadow: var(--shadow);
+  }
+
+  /* En la cápsula el contador va en gris: con cuatro chapas azules seguidas no se
+     distingue cuál es la sección elegida. */
+  .tabs-pista .tab-badge {
+    background: color-mix(in srgb, var(--text-light) 20%, transparent);
+    color: var(--text);
+  }
+
+  .seccion-tabs button.active .tab-badge {
+    background: var(--primary);
+    color: #fff;
+  }
+}
+
+/* --- Pantalla ancha: pestañas con subrayado (≥1025) ----------------------- */
+@media (min-width: 1025px) {
+  .seccion-tabs button {
+    padding: 15px 22px;
+    font-size: 14px;
+  }
+
+  /* El subrayado crece desde el centro al pasar por encima: dice qué se va a pulsar
+     antes de pulsarlo, sin mover nada de sitio. */
+  .seccion-tabs button::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    right: 50%;
+    bottom: -1px;
+    height: 2px;
+    background: var(--primary);
+    transition: left 0.18s ease, right 0.18s ease;
+  }
+
+  .seccion-tabs button {
+    position: relative;
+    border-bottom-color: transparent !important;
+  }
+
+  .seccion-tabs button:hover::after {
+    left: 22px;
+    right: 22px;
+    background: var(--border);
+  }
+
+  .seccion-tabs button.active::after {
+    left: 0;
+    right: 0;
+    background: var(--primary);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seccion-tabs button::after {
+    transition: none;
+  }
 }
 
 /* ==========================================================================
