@@ -381,7 +381,8 @@ const resumenPorVendedor = computed(() => {
       producto_nombre: item.producto_nombre,
       asignado: item.asignado,
       en_proceso: item.en_proceso,
-      cobrado: item.cobrado,
+      // El servidor manda los dos con el mismo valor mientras se retira el viejo.
+      facturado: item.facturado ?? item.cobrado ?? 0,
       completada: item.completada,
       pendiente: item.pendiente,
       vendido: vendidoMap[`${item.vendedor}|${item.good_id}`] || 0
@@ -394,6 +395,76 @@ const resumenPorVendedor = computed(() => {
       productos: Object.values(g.productos).sort((a, b) => (a.producto_nombre || '').localeCompare(b.producto_nombre || ''))
     }))
 })
+
+/**
+ * Las iniciales del vendedor: la primera del nombre y la primera del apellido.
+ *
+ * Con una sola letra, ALEXANDER PADRON y ANDY ALMANZA tenían el mismo círculo, que
+ * es justo lo contrario de lo que sirve una inicial.
+ */
+function inicialesDe(nombre) {
+  const partes = String(nombre || '').replace(/^V-/, '').trim().split(/\s+/).filter(Boolean)
+  if (!partes.length) return '?'
+  const primera = partes[0][0]
+  const ultima = partes.length > 1 ? partes[partes.length - 1][0] : ''
+  return (primera + ultima).toUpperCase()
+}
+
+/** Lo de un vendedor, sumado, para poder comparar vendedores sin leer sus filas. */
+function totalesDe(item) {
+  const t = { asignado: 0, en_proceso: 0, facturado: 0, completada: 0, vendido: 0 }
+  for (const p of item.productos) {
+    for (const k in t) t[k] += p[k] || 0
+  }
+  return t
+}
+
+/**
+ * Cómo se reparte lo asignado de un producto, en porcentaje.
+ *
+ * Cuatro tramos que suman lo asignado: lo que ya salió del almacén, lo que está
+ * facturado esperando salir, lo que tiene pedido sin facturar, y lo que nadie ha
+ * tocado. Una barra se lee de un vistazo; seis números en seis columnas de 40 px,
+ * no.
+ *
+ * Si lo despachado pasa de lo asignado —que ocurre— la barra se mide contra lo
+ * ocupado y el exceso se dice aparte con su cifra, en vez de dibujar un tramo que
+ * se sale de su caja.
+ */
+function tramosDe(p) {
+  const asignado = p.asignado || 0
+  const completada = p.completada || 0
+  const facturado = p.facturado || 0
+  const proceso = p.en_proceso || 0
+  const ocupado = completada + facturado + proceso
+  const base = Math.max(asignado, ocupado, 1)
+  const parte = (n) => `${(n / base) * 100}%`
+  return {
+    despachado: parte(completada),
+    facturado: parte(facturado),
+    proceso: parte(proceso),
+    libre: parte(Math.max(0, asignado - ocupado)),
+    sinTocar: Math.max(0, asignado - ocupado),
+    deMas: Math.max(0, ocupado - asignado)
+  }
+}
+
+/** El avance de un vendedor sobre lo suyo, para el número grande de su cabecera. */
+function avanceDe(item) {
+  const t = totalesDe(item)
+  if (!t.asignado) return 0
+  return Math.min(100, Math.round((t.completada / t.asignado) * 100))
+}
+
+/**
+ * El nombre del producto sin lo que se repite en todas las filas.
+ *
+ * Dentro de la tarjeta de un vendedor todo es CERVEZA o MALTA; escribirlo en cada
+ * línea gasta el ancho que necesita lo que sí distingue una de otra.
+ */
+function nombreCorto(nombre) {
+  return String(nombre || '').replace(/^(CERVEZA|MALTA)\s+/, '')
+}
 
 // Agrupar ventas por vendedor
 const ventasPorVendedor = computed(() => {
@@ -844,76 +915,106 @@ function esFilaExpandida(vendedor, producto_id) {
         <!-- Resumen por Vendedor -->
         <div v-if="seccionActiva === 'resumen'">
           <div v-if="resumenPorVendedor.length > 0" class="vendedor-grid">
-            <div v-for="item in resumenPorVendedor" :key="item.vendedor" class="vendedor-card">
-              <div class="vendedor-header">
-                <span class="vendedor-avatar">{{ item.vendedor.charAt(0) }}</span>
-                <h3>{{ item.vendedor }}</h3>
-              </div>
-              <table class="mini-table">
-                <thead>
-                  <tr>
-                    <th>Producto</th>
-                    <th class="text-right">Asig.</th>
-                    <th class="text-right" title="Tiene pedido pero no ha pagado">En Proc.</th>
-                    <th class="text-right" title="Ya pagó, falta despacharlo">Cobr.</th>
-                    <th class="text-right">Compl.</th>
-                    <th class="text-right" title="Asignado menos lo vendido: esta cantidad podría no pagarse">Pend.</th>
-                    <th class="text-right">Vend.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <template v-for="(prod, prodId) in item.productos" :key="prodId">
-                    <tr
-                      class="fila-clickeable"
-                      :class="{ 'fila-expandida': esFilaExpandida(item.vendedor, prod.producto_id) }"
-                      @click="toggleDetalle(item.vendedor, prod.producto_id)"
-                    >
-                      <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
-                      <td class="text-right">{{ prod.asignado }}</td>
-                      <td class="text-right warning">{{ prod.en_proceso }}</td>
-                      <td class="text-right cobrado-val">{{ prod.cobrado }}</td>
-                      <td class="text-right success">{{ prod.completada }}</td>
-                      <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
-                      <td class="text-right">{{ prod.vendido }}</td>
-                    </tr>
-                    <tr v-if="esFilaExpandida(item.vendedor, prod.producto_id)">
-                      <td colspan="7" class="detalle-container">
-                        <div v-if="loadingDetalle" class="detalle-loading">Cargando...</div>
-                        <div v-else-if="pedidosParaFila(item.vendedor, prod.producto_id).length === 0" class="detalle-empty">
-                          No hay pedidos en proceso
-                        </div>
-                        <div v-else class="detalle-pedidos">
-                          <div class="detalle-titulo">Pedidos en proceso ({{ pedidosParaFila(item.vendedor, prod.producto_id).length }})</div>
-                          <table class="detalle-table">
-                            <thead>
-                              <tr>
-                                <th>Folio</th>
-                                <th>Fecha</th>
-                                <th>Cliente</th>
-                                <th class="text-right">Packs</th>
-                                <th>Estado</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              <tr v-for="(ped, idx) in pedidosParaFila(item.vendedor, prod.producto_id)" :key="idx">
-                                <td class="folio">{{ ped.folio }}</td>
-                                <td>{{ ped.fecha ? ped.fecha.split('T')[0] : '-' }}</td>
-                                <td>{{ ped.cliente_nombre || '-' }}</td>
-                                <td class="text-right packs-val">{{ ped.packs }}</td>
-                                <td>
-                                  <AppIcon v-if="ped.cobrado" name="check" :size="18" class="estado-ico estado-ico-cobrado" />
-                                  <AppIcon v-else name="hourglass" :size="18" class="estado-ico estado-ico-proceso" />
-                                </td>
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      </td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
+            <article v-for="item in resumenPorVendedor" :key="item.vendedor" class="vendedor-card">
+              <header class="vendedor-header">
+                <span class="vendedor-avatar">{{ inicialesDe(item.vendedor) }}</span>
+                <div class="vendedor-id">
+                  <h3>{{ item.vendedor }}</h3>
+                  <p>{{ totalesDe(item).completada }} de {{ totalesDe(item).asignado }} despachados</p>
+                </div>
+                <span class="vendedor-avance" :title="`${avanceDe(item)} por ciento de lo asignado ya salió del almacén`">
+                  {{ avanceDe(item) }}<small>%</small>
+                </span>
+              </header>
+
+              <ul class="producto-lista">
+                <li
+                  v-for="prod in item.productos"
+                  :key="prod.producto_id"
+                  class="producto"
+                  :class="{ abierto: esFilaExpandida(item.vendedor, prod.producto_id) }"
+                >
+                  <button
+                    type="button"
+                    class="producto-cabeza"
+                    :aria-expanded="esFilaExpandida(item.vendedor, prod.producto_id)"
+                    @click="toggleDetalle(item.vendedor, prod.producto_id)"
+                  >
+                    <span class="producto-nombre">{{ nombreCorto(prod.producto_nombre) }}</span>
+                    <span class="producto-cifra">
+                      <b>{{ prod.completada }}</b><span class="de">/</span>{{ prod.asignado }}
+                    </span>
+                    <AppIcon name="chevronRight" :size="16" class="producto-flecha" />
+                  </button>
+
+                  <div
+                    class="barra"
+                    role="img"
+                    :aria-label="`De ${prod.asignado} asignados: ${prod.completada} despachados, ${prod.facturado} facturados sin salir, ${prod.en_proceso} con pedido sin facturar`"
+                  >
+                    <span class="tramo t-despachado" :style="{ width: tramosDe(prod).despachado }"></span>
+                    <span class="tramo t-facturado" :style="{ width: tramosDe(prod).facturado }"></span>
+                    <span class="tramo t-proceso" :style="{ width: tramosDe(prod).proceso }"></span>
+                    <span class="tramo t-libre" :style="{ width: tramosDe(prod).libre }"></span>
+                  </div>
+
+                  <p class="marcas">
+                    <span v-if="prod.completada" class="marca m-despachado">Despachado <b>{{ prod.completada }}</b></span>
+                    <span v-if="prod.facturado" class="marca m-facturado">Facturado <b>{{ prod.facturado }}</b></span>
+                    <span v-if="prod.en_proceso" class="marca m-proceso">En proceso <b>{{ prod.en_proceso }}</b></span>
+                    <span v-if="tramosDe(prod).sinTocar" class="marca m-libre">Sin pedido <b>{{ tramosDe(prod).sinTocar }}</b></span>
+                    <span
+                      v-if="tramosDe(prod).deMas"
+                      class="marca m-demas"
+                      title="Salió más de lo que se le asignó"
+                    >De más <b>{{ tramosDe(prod).deMas }}</b></span>
+                  </p>
+
+                  <div v-if="esFilaExpandida(item.vendedor, prod.producto_id)" class="detalle">
+                    <p v-if="loadingDetalle" class="detalle-aviso">Cargando…</p>
+                    <p v-else-if="pedidosParaFila(item.vendedor, prod.producto_id).length === 0" class="detalle-aviso">
+                      No queda ningún pedido por despachar de este producto
+                    </p>
+                    <template v-else>
+                      <div class="detalle-titulo">
+                        Pedidos sin despachar ({{ pedidosParaFila(item.vendedor, prod.producto_id).length }})
+                      </div>
+                      <ul class="pedido-lista">
+                        <li v-for="(ped, idx) in pedidosParaFila(item.vendedor, prod.producto_id)" :key="idx" class="pedido">
+                          <span class="pedido-folio">{{ ped.folio }}</span>
+                          <span class="pedido-cliente">{{ ped.cliente_nombre || 'Sin cliente' }}</span>
+                          <span class="pedido-fecha">{{ ped.fecha ? ped.fecha.split('T')[0] : '—' }}</span>
+                          <span class="pedido-packs">{{ ped.packs }}</span>
+                          <span class="pedido-estado">
+                            <span
+                              v-if="ped.factura_estado === 'cambiado'"
+                              class="sello s-cambiado"
+                              :title="ped.factura ? `Factura ${ped.factura}: se facturó algo distinto de lo pedido` : 'Se facturó algo distinto de lo pedido'"
+                            >Facturó y cambió</span>
+                            <span
+                              v-else-if="ped.facturado"
+                              class="sello s-facturado"
+                              :title="ped.factura ? `Factura ${ped.factura}` : 'Facturado'"
+                            >Facturado</span>
+                            <span v-else class="sello s-proceso">Sin factura</span>
+                            <span
+                              v-if="ped.cobrado_vendedor"
+                              class="sello s-cobrado"
+                              title="El vendedor lo declaró cobrado. Es otra cosa que estar facturado."
+                            >Cobrado</span>
+                            <span
+                              v-if="ped.cobrado_manual"
+                              class="sello s-manual"
+                              title="Marcado a mano desde esta aplicación"
+                            >Marcado</span>
+                          </span>
+                        </li>
+                      </ul>
+                    </template>
+                  </div>
+                </li>
+              </ul>
+            </article>
           </div>
           <div v-else class="empty-state">
             <p>No hay resumen de asignaciones</p>
@@ -1094,7 +1195,7 @@ function esFilaExpandida(vendedor, producto_id) {
         <div v-if="vendedorSeleccionado">
           <div v-for="item in ventasFiltradas" :key="item.vendedor" class="venta-card">
           <div class="venta-header">
-            <span class="vendedor-avatar">{{ item.vendedor.charAt(0) }}</span>
+            <span class="vendedor-avatar">{{ inicialesDe(item.vendedor) }}</span>
             <h3>{{ item.vendedor }}</h3>
             <span class="venta-clientes"><AppIcon name="users" :size="14" /> {{ item.clientes }} {{ item.clientes === 1 ? 'cliente' : 'clientes' }}</span>
             <span class="venta-total">${{ Object.values(item.productos).reduce((s, p) => s + p.total, 0).toFixed(2) }}</span>
@@ -1153,6 +1254,14 @@ function esFilaExpandida(vendedor, producto_id) {
   --text-light: #64748b;
   --border: #e2e8f0;
   --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  /*
+   * La aplicación es clara y punto. Sin esto el navegador de quien tenga el sistema
+   * en oscuro pinta las barras de desplazamiento y los desplegables en negro sobre
+   * una página blanca.
+   */
+  color-scheme: light;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
   --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
   --radius: 12px;
 }
@@ -1162,6 +1271,43 @@ body {
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
+}
+
+/*
+ * La aplicación ocupa la ventana.
+ *
+ * El andamio que trae Vite al crear el proyecto dejaba `#app` en una caja de 1126 px
+ * centrada, con una raya vertical a cada lado, `text-align: center` —de ahí que los
+ * nombres de los vendedores salieran centrados— y `min-height: 100svh`. Se quitó
+ * entero: no lo usaba nada más que esa caja, y era lo que tenía el diseño metido en
+ * un sobre con la barra de desplazamiento colgando lejos del contenido.
+ */
+#app {
+  min-height: 100vh;
+}
+
+/* Fina y discreta. La de serie es una franja gris de 15 px al lado de todo. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-light) 35%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-light) 35%, transparent);
+  border-radius: 99px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-light) 60%, transparent);
 }
 
 .app {
@@ -1687,14 +1833,7 @@ body {
 
 .warning {
   color: var(--warning);
-}
-
-.cobrado-val {
-  color: #0891b2;
-  font-weight: 600;
-}
-
-.danger {
+}.danger {
   color: var(--danger);
   font-weight: 600;
 }
@@ -1768,43 +1907,6 @@ body {
   gap: 16px;
   padding: 20px 24px;
   align-items: start;
-}
-
-.vendedor-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.vendedor-header {
-  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.vendedor-avatar {
-  width: 36px;
-  height: 36px;
-  background: var(--primary);
-  color: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-}
-
-.vendedor-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Filtro Fecha */
@@ -2216,103 +2318,14 @@ body {
 
 .empty-state-large p {
   color: var(--text-light);
-}
-
-/* Detalle de pedidos en proceso */
-.fila-clickeable {
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.fila-clickeable:hover {
-  background: #f0f4ff;
-}
-
-.fila-clickeable.fila-expandida {
-  background: #eef2ff;
-}
-
-.detalle-container {
-  padding: 0 !important;
-  background: #f8fafc;
-  border-top: 1px dashed var(--border) !important;
-}
-
-.detalle-loading,
-.detalle-empty {
-  padding: 12px 20px;
-  font-size: 12px;
-  color: var(--text-light);
-  font-style: italic;
-}
-
-.detalle-pedidos {
-  padding: 8px 0;
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.detalle-titulo {
+}.detalle-titulo {
   padding: 4px 20px 8px;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--primary);
-}
-
-.detalle-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 0;
-}
-
-.detalle-table th {
-  padding: 6px 20px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--text-light);
-  background: transparent;
-  border-bottom: 1px solid var(--border);
-}
-
-.detalle-table td {
-  padding: 6px 20px;
-  font-size: 12px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.detalle-table tbody tr:hover {
-  background: #eef2ff;
-}
-
-.detalle-table .folio {
-  font-family: 'SF Mono', 'Consolas', monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--primary);
-}
-
-.detalle-table .packs-val {
-  font-weight: 700;
-  color: var(--warning);
-}
-
-.estado-ico {
-  display: inline-flex;
-  vertical-align: middle;
-}
-
-.estado-ico-cobrado {
-  color: #0891b2;
-}
-
-.estado-ico-proceso {
-  color: #d97706;
-}
-
-/* ==========================================================================
+}/* ==========================================================================
    EL DESLIZADOR DE SECCIONES
 
    En pantalla ancha son pestañas de toda la vida y las flechas no aparecen.
@@ -2357,8 +2370,15 @@ body {
   text-align: center;
 }
 
-/* Las flechas sólo existen en el móvil. */
-.tab-flecha {
+/*
+ * Las flechas sólo existen en el móvil.
+ *
+ * Va calificada con `.seccion-tabs` a propósito: `.seccion-tabs button` —que pone las
+ * pestañas en fila— pesa más que `.tab-flecha` a secas, así que el `display: none`
+ * perdía y las dos flechas salían en escritorio, pequeñas y medio transparentes, a
+ * los lados de las pestañas. Se veían como dos motas de suciedad en la pantalla.
+ */
+.seccion-tabs .tab-flecha {
   display: none;
   flex: 0 0 auto;
   align-items: center;
@@ -2454,7 +2474,7 @@ body {
     padding: 0 4px;
   }
 
-  .tab-flecha {
+  .seccion-tabs .tab-flecha {
     display: flex;
   }
 
@@ -2515,21 +2535,7 @@ body {
   .data-table,
   .table-almacen {
     min-width: 520px;
-  }
-
-  /* Las pequeñas viven DENTRO de la tarjeta del vendedor y no tienen contenedor
-     que ruede. Ponerles un mínimo las sacaría de la tarjeta, así que se hacen
-     ellas mismas desplazables: es el único sitio donde `display: block` en una
-     tabla vale la pena. */
-  .mini-table,
-  .detalle-table {
-    display: block;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    white-space: nowrap;
-  }
-
-  .card-header {
+  }  .card-header {
     flex-wrap: wrap;
     gap: 8px;
     padding: 14px 12px;
@@ -2574,6 +2580,348 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ==========================================================================
+   LA TARJETA DEL VENDEDOR
+
+   Antes era una tabla de siete columnas dentro de una tarjeta de 340 px: las
+   cifras cabían en 40 px cada una, las cabeceras salían partidas ("EN / PROC.") y
+   el nombre del producto se rompía en cuatro líneas, de forma que cada fila medía
+   lo que mide un párrafo para enseñar seis números.
+
+   Ahora cada producto es una línea con su barra. La barra dice de un vistazo cómo
+   va lo asignado —qué salió, qué está facturado esperando, qué tiene pedido y qué
+   no ha tocado nadie—; las cifras van debajo con su nombre escrito entero, que es
+   lo que hacía falta para no tener que adivinar qué significaba "Cobr.".
+   ========================================================================== */
+
+.vendedor-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.vendedor-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.vendedor-avatar {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+.vendedor-id {
+  min-width: 0;
+  flex: 1;
+}
+
+/* El nombre completo, sin recortar: son nombres de personas y hay que poder
+   distinguir dos que empiezan igual. */
+.vendedor-id h3 {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.vendedor-id p {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.vendedor-avance {
+  flex: none;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.vendedor-avance small {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+  margin-left: 1px;
+}
+
+/* --- Los productos ------------------------------------------------------- */
+
+.producto-lista {
+  list-style: none;
+}
+
+.producto {
+  padding: 12px 16px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.producto:last-child {
+  border-bottom: 0;
+}
+
+.producto.abierto {
+  background: color-mix(in srgb, var(--primary) 4%, transparent);
+}
+
+.producto-cabeza {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.producto-cabeza:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.producto-nombre {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* Lo despachado sobre lo asignado: la cifra que resume la fila. */
+.producto-cifra {
+  flex: none;
+  font-size: 13px;
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.producto-cifra b {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.producto-cifra .de {
+  margin: 0 1px;
+  opacity: 0.5;
+}
+
+.producto-flecha {
+  flex: none;
+  color: var(--text-light);
+  transition: transform 0.15s ease;
+  align-self: center;
+}
+
+.producto.abierto .producto-flecha {
+  transform: rotate(90deg);
+}
+
+/* --- La barra ------------------------------------------------------------ */
+
+.barra {
+  display: flex;
+  height: 7px;
+  margin-top: 9px;
+  border-radius: 99px;
+  overflow: hidden;
+  /* El fondo se ve sólo si los tramos no llegan a llenarla, que es justo lo que
+     hay que notar. */
+  background: var(--border);
+}
+
+.tramo {
+  height: 100%;
+}
+
+.t-despachado { background: var(--success); }
+.t-facturado  { background: var(--primary); }
+.t-proceso    { background: var(--warning); }
+.t-libre      { background: transparent; }
+
+/* --- Las cifras, con su nombre entero ------------------------------------ */
+
+.marcas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 9px;
+}
+
+.marca {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-light);
+  white-space: nowrap;
+}
+
+/* El punto de color es lo que ata cada cifra con su tramo de la barra. Sin él la
+   barra es decoración y los números vuelven a ser una lista. */
+.marca::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.marca b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.m-despachado { color: var(--success); }
+.m-facturado  { color: var(--primary); }
+.m-proceso    { color: var(--warning); }
+.m-libre      { color: var(--text-light); }
+.m-demas      { color: var(--danger); }
+
+/* --- El detalle de los pedidos ------------------------------------------- */
+
+.detalle {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.detalle-aviso {
+  font-size: 12px;
+  color: var(--text-light);
+  padding: 4px 0;
+}
+
+.detalle-titulo {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-light);
+  margin-bottom: 8px;
+}
+
+.pedido-lista {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/*
+ * Rejilla y no tabla: una tabla de cinco columnas dentro de una tarjeta estrecha
+ * vuelve al problema de partida. Aquí el folio y los packs mandan, el cliente se
+ * queda con lo que sobra y los sellos caen a la línea de abajo cuando no caben.
+ */
+.pedido {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 2px 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.pedido-folio {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.pedido-cliente {
+  color: var(--text-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pedido-packs {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pedido-packs::after {
+  content: ' packs';
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--text-light);
+}
+
+.pedido-fecha {
+  grid-column: 1;
+  font-size: 11px;
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.pedido-estado {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sello {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 99px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.s-facturado {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, transparent);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+/* Facturó y cambió: hubo factura, pero no de lo que se pidió. Ni verde ni rojo. */
+.s-cambiado {
+  color: #7c3aed;
+  border-color: color-mix(in srgb, var(--purple) 40%, transparent);
+  background: color-mix(in srgb, var(--purple) 10%, transparent);
+}
+
+.s-proceso {
+  color: #92400e;
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+/* Lo que declara el vendedor y lo que se marcó a mano van sin relleno: se ven,
+   pero no compiten con el hecho de que haya factura. */
+.s-cobrado,
+.s-manual {
+  color: var(--text-light);
+  border-color: var(--border);
+  background: none;
 }
 
 /* ==========================================================================

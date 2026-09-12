@@ -396,37 +396,64 @@ async function computeResumen() {
   // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
   const { despachosMap, foliosDespachados } = await loadDespachos();
 
-  // Pedidos del API: solo en_proceso que aún NO se despacharon (evitar doble conteo)
-  // Los que ya están cobrados (pedido_cobrado=completo o marcado manual) van a "cobrado",
-  // no a "en_proceso" (que queda solo para los que de verdad no han pagado).
+  /**
+   * Lo que todavía no ha salido del almacén, separando lo que ya está pagado.
+   *
+   * FACTURADO no es COBRADO. Son dos cosas y antes iban en la misma columna.
+   *
+   * `pedido_cobrado` es un estado que ponen los VENDEDORES: lo declara una persona.
+   * Está vacío en dos de cada tres pedidos del mes (489 de 667), así que como medida
+   * de nada sirve de poco. Lo que dice que la operación se hizo de verdad es que el
+   * pedido esté FACTURADO —`igual`, se facturó lo que se pidió— o que FACTURARA Y
+   * CAMBIARA —`cambiado`, se facturó otra cosa—. En los dos casos hubo factura, que
+   * es el hecho; lo demás es lo que alguien dijo.
+   *
+   * Por eso esta columna salía en cero: el bucle sólo miraba los `en_proceso`, y un
+   * pedido en proceso NUNCA tiene factura —los 131 del mes están `sin_factura`—. La
+   * factura aparece cuando el pedido ya pasó a `completada`, que era justo lo que se
+   * saltaba. Cambiarle el nombre al campo sin tocar el filtro la habría dejado igual
+   * de vacía.
+   *
+   * Se mira todo lo que todavía no ha salido del almacén:
+   *   - con factura         -> facturado   (hecho, esperando salir)
+   *   - sin factura         -> en proceso  (ni facturado ni despachado)
+   *   - folio ya en Ventra  -> aquí no: eso es `completada`
+   *   - expirada            -> aquí tampoco: caducó, no es trabajo pendiente
+   *
+   * La marca a mano de esta aplicación NO se suma aquí, a propósito: mide lo que los
+   * vendedores declaran cobrado, que es la otra cosa. Sigue viva y se ve pedido por
+   * pedido en el detalle.
+   */
   const orders = await fetchAllOrders(...rangoDelMes());
-  const cobrosManuales = await cobrosManualesSet();
   const procesoMap = {};
-  const cobradoMap = {};
+  const facturadoMap = {};
   for (const o of orders) {
-    if (o.estado !== 'en_proceso') continue;
+    if (o.estado === 'expirada') continue;
     if (!o.folio) continue;
     if (foliosDespachados.has(o.folio.toUpperCase())) continue;
     const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
     if (!vendedor) continue;
-    const esCobrado = o.pedido_cobrado === 'completo' || cobrosManuales.has(o.folio.toUpperCase());
+    // `igual` = se facturó lo que se pidió. `cambiado` = facturó y cambió. Las dos son
+    // factura; ninguna otra cosa lo es.
+    const esFacturado = o.facturaEstado === 'igual' || o.facturaEstado === 'cambiado';
     for (const it of (o.items || [])) {
       const goodId = goodIdFromItem(it, goodsIndex);
       if (!goodId) continue;
       const key = `${vendedor}|${goodId}`;
       if (!asignInfo[key]) continue;
-      const target = esCobrado ? cobradoMap : procesoMap;
+      const target = esFacturado ? facturadoMap : procesoMap;
       target[key] = (target[key] || 0) + (it.packs || 0);
     }
   }
 
-  // Build resumen: completada = despachos reales (topeado al asignado),
-  // cobrado = pagado pendiente de despacho, en_proceso = el resto sin pagar
+  // completada = despachos reales de Ventra (topeado al asignado)
+  // facturado  = tiene factura pero todavía no ha salido del almacén
+  // en_proceso = ni facturado ni despachado
   const resumen = [];
   for (const key in asignMap) {
     const info = asignInfo[key];
     const completada = Math.min(despachosMap[`${info.vendedor}|${info.goodId}`] || 0, asignMap[key]);
-    const cobrado = cobradoMap[key] || 0;
+    const facturado = facturadoMap[key] || 0;
     const enProceso = procesoMap[key] || 0;
     resumen.push({
       vendedor: info.vendedor,
@@ -435,9 +462,17 @@ async function computeResumen() {
       producto_nombre: info.producto_nombre,
       asignado: asignMap[key],
       en_proceso: enProceso,
-      cobrado,
+      facturado,
+      /**
+       * Se sigue mandando `cobrado` con el mismo valor que `facturado`.
+       *
+       * No es un descuido: hay pantallas y guardados que todavía leen ese nombre, y
+       * quitarlo de golpe las deja en blanco sin que nadie se entere. Se retira cuando
+       * no quede quien lo lea.
+       */
+      cobrado: facturado,
       completada,
-      pendiente: Math.max(0, asignMap[key] - completada - cobrado)
+      pendiente: Math.max(0, asignMap[key] - completada - facturado)
     });
   }
   return resumen;
@@ -512,13 +547,19 @@ async function computeDetalleProceso() {
 
   const result = {};
   const cobrosManuales = await cobrosManualesSet();
+  // La MISMA regla que el resumen, a propósito: si aquí se filtrara distinto, el número
+  // de la tabla y la lista que sale al abrirlo no cuadrarían, y no habría forma de saber
+  // cuál de los dos miente. Ver `computeResumen`.
   for (const o of orders) {
-    if (o.estado !== 'en_proceso') continue;
+    if (o.estado === 'expirada') continue;
     if (!o.folio) continue;
     if (foliosDespachados.has(o.folio.toUpperCase())) continue;
     const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
     if (!vendedor) continue;
-    const pedidoCobrado = o.pedido_cobrado === 'completo' || cobrosManuales.has(o.folio.toUpperCase());
+    // Tres cosas distintas, cada una con su nombre. Juntarlas fue el error de antes.
+    const facturado = o.facturaEstado === 'igual' || o.facturaEstado === 'cambiado';
+    const cobradoPorVendedor = o.pedido_cobrado === 'completo';
+    const cobradoAMano = cobrosManuales.has(o.folio.toUpperCase());
     for (const it of (o.items || [])) {
       const goodId = goodIdFromItem(it, goodsIndex);
       if (!goodId) continue;
@@ -534,7 +575,17 @@ async function computeDetalleProceso() {
         packs: it.packs || 0,
         fecha: o.fecha || null,
         cliente_nombre: o.cliente?.nombre || null,
-        cobrado: pedidoCobrado
+        facturado,
+        // `igual` o `cambiado`, para poder distinguir en pantalla el pedido que se
+        // facturó tal cual del que se facturó con cambios.
+        factura_estado: o.facturaEstado || null,
+        factura: o.facturaNumero || null,
+        // Lo que declaran los vendedores y lo que se marcó a mano aquí: se enseñan,
+        // no se suman al facturado.
+        cobrado_vendedor: cobradoPorVendedor,
+        cobrado_manual: cobradoAMano,
+        /** Mismo valor que `facturado`, por lo de siempre: hay quien lee este nombre. */
+        cobrado: facturado
       });
     }
   }
