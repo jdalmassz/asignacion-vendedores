@@ -130,6 +130,16 @@ function goodIdFromItem(it, index) {
   return findGoodIDForAsign({ producto_id: it.codigo || '', producto_nombre: it.producto || it.codigo || '' }, index) || null;
 }
 
+/** El primer y el último día del mes en curso, `AAAA-MM-DD`. */
+function rangoDelMes() {
+  const hoy = new Date();
+  const a = hoy.getFullYear();
+  const m = String(hoy.getMonth() + 1).padStart(2, '0');
+  const ultimo = new Date(a, hoy.getMonth() + 1, 0).getDate();
+
+  return [`${a}-${m}-01`, `${a}-${m}-${String(ultimo).padStart(2, '0')}`];
+}
+
 async function apiGet(path) {
   const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}sucursalId=${SUCURSAL_ID}`;
   const resp = await fetch(url, {
@@ -153,9 +163,16 @@ async function fetchAllOrdersUncached(desde, hasta) {
   let totalPages = 1;
 
   while (page <= totalPages) {
+    /**
+     * `fechaDesde` y `fechaHasta`, no `desde` y `hasta`.
+     *
+     * PEDIDO lee esos dos nombres y **ignora en silencio** cualquier otro: con `desde` y
+     * `hasta` no filtraba nada y esto se traía los 63.000 pedidos de todas las sucursales,
+     * de mil en mil, tres veces por pantalla. No fallaba: tardaba y contaba de más.
+     */
     let path = `/orders?page=${page}&limit=${limit}`;
-    if (desde) path += `&desde=${desde}`;
-    if (hasta) path += `&hasta=${hasta}`;
+    if (desde) path += `&fechaDesde=${desde}`;
+    if (hasta) path += `&fechaHasta=${hasta}`;
 
     const result = await apiGet(path);
 
@@ -217,7 +234,7 @@ app.get('/api/vendedores', async (req, res) => {
 // GET /api/productos — productos únicos de Procovar API con stock
 app.get('/api/productos', async (req, res) => {
   try {
-    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+    const orders = await fetchAllOrders(...rangoDelMes());
     const seen = {};
     for (const order of orders) {
       if (!order.items) continue;
@@ -382,7 +399,7 @@ async function computeResumen() {
   // Pedidos del API: solo en_proceso que aún NO se despacharon (evitar doble conteo)
   // Los que ya están cobrados (pedido_cobrado=completo o marcado manual) van a "cobrado",
   // no a "en_proceso" (que queda solo para los que de verdad no han pagado).
-  const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+  const orders = await fetchAllOrders(...rangoDelMes());
   const cobrosManuales = await cobrosManualesSet();
   const procesoMap = {};
   const cobradoMap = {};
@@ -487,7 +504,7 @@ app.get('/api/clientes-por-vendedor', async (req, res) => {
 
 // GET /api/detalle-proceso — detalle de pedidos en_proceso por vendedor+producto
 async function computeDetalleProceso() {
-  const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+  const orders = await fetchAllOrders(...rangoDelMes());
   const goodsIndex = await loadGoodsIndex();
 
   // Despachos reales para saber qué folios ya se despacharon
@@ -586,7 +603,38 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ success: false, error: err?.message || 'error interno' });
 });
 
+/**
+ * Comprobación al arrancar: que la sucursal configurada devuelva pedidos.
+ *
+ * PEDIDO acepta el ID de la sucursal, no su código. Si se le manda `CAM` en vez del
+ * identificador **contesta 200 con cero pedidos**, sin error ninguno: las pantallas salen
+ * vacías y parece que no hay ventas ese mes. Costó encontrarlo una vez; que avise solo.
+ *
+ * No impide arrancar —una caída de PEDIDO no puede tumbar esto— pero lo deja escrito en
+ * el log, que es donde se mira cuando algo sale en blanco.
+ */
+async function avisarSiLaSucursalNoDevuelveNada() {
+  try {
+    const [desde, hasta] = rangoDelMes();
+    const r = await apiGet(`/orders?page=1&limit=1&fechaDesde=${desde}&fechaHasta=${hasta}`);
+    const total = r?.pagination?.total ?? (Array.isArray(r) ? r.length : 0);
+
+    if (total > 0) {
+      console.log(`[pedido] sucursal ${SUCURSAL_ID}: ${total} pedidos este mes`);
+    } else {
+      console.warn(
+        `[pedido] AVISO: la sucursal '${SUCURSAL_ID}' no devuelve ningún pedido este mes. ` +
+        `Comprueba PROCOVAR_SUCURSAL_ID: tiene que ser el ID de la sucursal, no su código ` +
+        `(no vale 'CAM').`,
+      );
+    }
+  } catch (e) {
+    console.warn('[pedido] no se pudo comprobar la sucursal al arrancar:', e.message);
+  }
+}
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  void avisarSiLaSucursalNoDevuelveNada();
 });

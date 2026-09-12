@@ -48,7 +48,7 @@ VENTRA_DB            camaguey
 VENTRA_SUCURSAL      CAMAGUEY
 PROCOVAR_API_BASE    https://pedidos.procovar.cloud/api
 PROCOVAR_API_KEY     la clave de integración
-PROCOVAR_SUCURSAL_ID
+PROCOVAR_SUCURSAL_ID el ID de la sucursal, NO su código: con 'CAM' devuelve 0 pedidos sin error
 PORT                 4000 por defecto
 ```
 
