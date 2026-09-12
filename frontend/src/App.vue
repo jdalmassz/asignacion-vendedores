@@ -31,7 +31,27 @@ const vendedorSeleccionado = ref('')
 
 // Filtro de fecha para ventas
 const filtroPreset = ref('mes') // 'hoy', 'mes', 'rango'
-const seccionActiva = ref('resumen') // 'resumen', 'asignaciones'
+/**
+ * Las dos secciones, en una lista.
+ *
+ * En una lista y no escritas dos veces en el HTML porque el deslizador necesita saber
+ * cuál va antes y cuál después para las flechas. Añadir una tercera es añadirla aquí.
+ */
+const SECCIONES = [
+  { id: 'resumen', titulo: 'Resumen por Vendedor', icono: 'clipboard' },
+  { id: 'asignaciones', titulo: 'Mis Asignaciones', icono: 'edit' },
+]
+
+const seccionActiva = ref('resumen')
+
+const indiceSeccion = computed(() => SECCIONES.findIndex((s) => s.id === seccionActiva.value))
+
+/** Pasa a la sección de al lado. No da la vuelta: en el extremo la flecha se apaga. */
+function cambiarSeccion(paso) {
+  const i = indiceSeccion.value + paso
+
+  if (i >= 0 && i < SECCIONES.length) seccionActiva.value = SECCIONES[i].id
+}
 const filtroFechaDesde = ref('')
 const filtroFechaHasta = ref('')
 
@@ -747,21 +767,58 @@ function esFilaExpandida(vendedor, producto_id) {
 
       <!-- Tabs Asignaciones / Resumen -->
       <section class="card">
+        <!-- En pantalla ancha son pestañas de toda la vida. En el móvil se convierten en
+             un deslizador: una sección a la vez, con flechas para pasar. Dos pestañas con
+             sus iconos y su contador no caben en 360 px sin encogerse hasta no leerse. -->
         <div class="seccion-tabs">
           <button
-            :class="{ active: seccionActiva === 'resumen' }"
-            @click="seccionActiva = 'resumen'"
+            class="tab-flecha"
+            type="button"
+            aria-label="Sección anterior"
+            :disabled="indiceSeccion === 0"
+            @click="cambiarSeccion(-1)"
           >
-            <AppIcon name="clipboard" :size="14" /> Resumen por Vendedor
+            <AppIcon name="chevronLeft" :size="16" />
           </button>
+
+          <div class="tabs-pista">
+            <button
+              v-for="(s, i) in SECCIONES"
+              :key="s.id"
+              :class="{ active: seccionActiva === s.id }"
+              :aria-current="seccionActiva === s.id ? 'page' : undefined"
+              type="button"
+              @click="seccionActiva = s.id"
+            >
+              <AppIcon :name="s.icono" :size="14" /> {{ s.titulo }}
+              <span v-if="s.id === 'asignaciones'" class="tab-badge">{{ asignaciones.length }}</span>
+              <span
+                v-if="s.id === 'asignaciones' && hayCambiosAsig"
+                class="tab-badge-dot"
+                title="Hay cambios en las asignaciones — clic para actualizar"
+              ></span>
+            </button>
+          </div>
+
           <button
-            :class="{ active: seccionActiva === 'asignaciones' }"
-            @click="seccionActiva = 'asignaciones'"
+            class="tab-flecha"
+            type="button"
+            aria-label="Sección siguiente"
+            :disabled="indiceSeccion === SECCIONES.length - 1"
+            @click="cambiarSeccion(1)"
           >
-            <AppIcon name="edit" :size="14" /> Mis Asignaciones
-            <span class="tab-badge">{{ asignaciones.length }}</span>
-            <span v-if="hayCambiosAsig" class="tab-badge-dot" title="Hay cambios en las asignaciones — clic para actualizar"></span>
+            <AppIcon name="chevronRight" :size="16" />
           </button>
+        </div>
+
+        <!-- Puntitos: en el móvil dicen en cuál de las dos estás, que con el deslizador
+             no se ve de un vistazo. -->
+        <div class="tabs-puntos">
+          <span
+            v-for="s in SECCIONES"
+            :key="'p-' + s.id"
+            :class="{ activo: seccionActiva === s.id }"
+          ></span>
         </div>
 
         <!-- Resumen por Vendedor -->
@@ -1948,13 +2005,6 @@ body {
 }
 
 /* Seccion Tabs */
-.seccion-tabs {
-  display: flex;
-  gap: 0;
-  padding: 0 24px;
-  border-bottom: 1px solid var(--border);
-}
-
 .seccion-tabs button {
   padding: 14px 20px;
   border: none;
@@ -2220,5 +2270,256 @@ body {
 
 .estado-ico-proceso {
   color: #d97706;
+}
+
+/* ==========================================================================
+   EL DESLIZADOR DE SECCIONES
+
+   En pantalla ancha son pestañas de toda la vida y las flechas no aparecen.
+   En el móvil, dos pestañas con su icono, su texto y su contador no caben en
+   360 px: se encogían hasta solaparse. Ahí pasan a ser un deslizador con
+   flechas, que es lo que pidió Jose.
+   ========================================================================== */
+
+.seccion-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Las flechas sólo existen en el móvil. */
+.tab-flecha {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  /* 44 px es el mínimo para que un dedo acierte sin pelearse. */
+  width: 44px;
+  border: none;
+  background: none;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+.tab-flecha:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.tabs-pista {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Los puntitos también son sólo del móvil. */
+.tabs-puntos {
+  display: none;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 0 2px;
+}
+
+.tabs-puntos span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.2s, width 0.2s;
+}
+
+.tabs-puntos span.activo {
+  width: 18px;
+  border-radius: 3px;
+  background: var(--primary);
+}
+
+/* ==========================================================================
+   MÓVIL  (hasta 640 px)
+
+   No había ni una `@media` en todo el fichero: el diseño era de escritorio y
+   en el teléfono se rompía entero. Esto es lo mínimo para que se use de pie
+   en la calle, que es donde se va a usar.
+   ========================================================================== */
+
+@media (max-width: 640px) {
+  .main-content {
+    /* 16 px de aire a los lados: menos, y el texto toca el borde del cristal. */
+    padding: 16px 12px;
+    gap: 16px;
+  }
+
+  /* --- La cabecera, en dos filas --- */
+  .header-content {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    height: auto;
+    padding: 12px 0;
+  }
+
+  .header-title h1 {
+    font-size: 17px;
+    line-height: 1.25;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  /* El botón principal ocupa lo que queda; el de refrescar, lo justo. */
+  .header-actions .btn-lg {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .header-actions .ref-btn {
+    flex: 0 0 44px;
+    min-height: 44px;
+  }
+
+  /* --- Las secciones, una a una con flechas --- */
+  .seccion-tabs {
+    padding: 0 4px;
+  }
+
+  .tab-flecha {
+    display: flex;
+  }
+
+  .tabs-puntos {
+    display: flex;
+  }
+
+  .tabs-pista {
+    /* Una sección a la vez, y el dedo también puede arrastrar. */
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+
+  .tabs-pista::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabs-pista button {
+    flex: 0 0 100%;
+    scroll-snap-align: center;
+    justify-content: center;
+    /* Sin recortar el nombre: «Resumen por Vendedor» cabe entero si tiene la
+       fila para él solo. */
+    white-space: nowrap;
+    padding: 14px 8px;
+  }
+
+  /* --- Las rejillas, a una columna --- */
+  .stats-grid {
+    /* `auto-fit` con 200 px de mínimo metía dos por fila y quedaban ilegibles. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .vendedor-grid {
+    /* Era `minmax(340px, 1fr)`: en una pantalla de 360 px la tarjeta se salía. */
+    grid-template-columns: 1fr;
+    padding: 14px 12px;
+    gap: 12px;
+  }
+
+  .form-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  /* --- Las tablas, cada una con su propio desplazamiento --- */
+  .table-wrapper,
+  .tabla-scroll {
+    overflow-x: auto;
+    /* Que el dedo la deslice suave y no arrastre la página entera. */
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Las grandes van dentro de `.table-wrapper`, que ya rueda: se les pone un
+     mínimo para que no se compriman hasta pisarse las columnas. */
+  .data-table,
+  .table-almacen {
+    min-width: 520px;
+  }
+
+  /* Las pequeñas viven DENTRO de la tarjeta del vendedor y no tienen contenedor
+     que ruede. Ponerles un mínimo las sacaría de la tarjeta, así que se hacen
+     ellas mismas desplazables: es el único sitio donde `display: block` en una
+     tabla vale la pena. */
+  .mini-table,
+  .detalle-table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+  }
+
+  .card-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 14px 12px;
+  }
+
+  .card-header h2 {
+    font-size: 16px;
+  }
+
+  /* --- Lo que se toca, que se pueda tocar --- */
+  .btn,
+  .seccion-tabs button {
+    min-height: 44px;
+  }
+
+  input,
+  select,
+  textarea {
+    /* Menos de 16 px hace que iOS dé un salto de zoom al enfocar el campo. */
+    font-size: 16px;
+    min-height: 44px;
+  }
+}
+
+/* ==========================================================================
+   MÓVIL ESTRECHO  (hasta 380 px)
+   ========================================================================== */
+
+@media (max-width: 380px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header-title h1 {
+    font-size: 15px;
+  }
+}
+
+/* ==========================================================================
+   TABLETA  (641–1024 px)
+   ========================================================================== */
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .main-content {
+    padding: 20px 16px;
+  }
+
+  .vendedor-grid {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    padding: 16px;
+  }
+}
+
+/* Quien haya pedido menos movimiento en su sistema, que no lo tenga. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 </style>
