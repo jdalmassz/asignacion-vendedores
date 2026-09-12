@@ -92,6 +92,40 @@ const fechaHoy = (() => {
   return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`
 })()
 
+/**
+ * Paginación de la lista de asignaciones.
+ *
+ * Hoy son catorce, pero son diez vendedores por un producto cada vez que se reparte:
+ * en un mes de trabajo normal esto pasa de cien filas y la página se convierte en un
+ * scroll infinito donde no se encuentra nada.
+ */
+const POR_PAGINA = [25, 50, 100, 0]
+const porPagina = ref(25)
+const pagina = ref(1)
+
+const totalPaginas = computed(() => {
+  if (porPagina.value === 0) return 1
+  return Math.max(Math.ceil((asignaciones.value?.length || 0) / porPagina.value), 1)
+})
+
+/* La página no puede quedarse fuera de rango cuando se borran filas: si estás en la 4
+   y borras hasta que sólo quedan 3 páginas, sin esto verías una tabla vacía. */
+const paginaActual = computed(() => Math.min(pagina.value, totalPaginas.value))
+
+const asignacionesVisibles = computed(() => {
+  const todas = asignaciones.value || []
+  if (porPagina.value === 0) return todas
+  const desde = (paginaActual.value - 1) * porPagina.value
+  return todas.slice(desde, desde + porPagina.value)
+})
+
+/** El número de fila real, no el de la página: en la 2 la primera es la 26. */
+const primeraDeLaPagina = computed(() =>
+  porPagina.value === 0 ? 0 : (paginaActual.value - 1) * porPagina.value
+)
+
+watch(porPagina, () => { pagina.value = 1 })
+
 // Formulario de nueva asignación
 const nuevaAsignacion = ref({
   producto: '',
@@ -344,14 +378,19 @@ async function crearAsignacion() {
   if (!producto) return
 
   try {
+    let aviso = null
     for (const vendedor of vendedoresSeleccionados.value) {
-      await axios.post(`${API_URL}/asignaciones`, {
+      const r = await axios.post(`${API_URL}/asignaciones`, {
         vendedor,
         producto_id: nuevaAsignacion.value.producto,
         producto_nombre: producto.name,
         cantidad: parseFloat(nuevaAsignacion.value.cantidad),
         fecha: nuevaAsignacion.value.fecha
       })
+      // El servidor avisa si el producto no casa con ninguno de Ventra: la asignación
+      // se guarda pero NO va a salir en el resumen. Es el mismo aviso para todos los
+      // vendedores del lote, así que con enseñarlo una vez basta.
+      if (r.data?.aviso) aviso = r.data.aviso
     }
 
     vendedoresSeleccionados.value = []
@@ -360,6 +399,7 @@ async function crearAsignacion() {
 
     await cargarResumen()
     await cargarAsignaciones()
+    if (aviso) alert(aviso)
   } catch (e) {
     alert('Error al crear asignación: ' + (e.response?.data?.error || e.message))
   }
@@ -1181,6 +1221,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             <table class="data-table">
               <thead>
                 <tr>
+                  <th class="fila-num">#</th>
                   <th>Fecha</th>
                   <th>Vendedor</th>
                   <th>Producto</th>
@@ -1189,7 +1230,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="asig in asignaciones" :key="asig.id">
+                <tr v-for="(asig, i) in asignacionesVisibles" :key="asig.id">
+                  <td class="fila-num">{{ primeraDeLaPagina + i + 1 }}</td>
                   <td>{{ asig.fecha }}</td>
                   <td>{{ asig.vendedor }}</td>
                   <td>{{ asig.producto_nombre }}</td>
@@ -1201,6 +1243,38 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               </tbody>
             </table>
           </div>
+
+          <!-- El pie sólo aparece cuando hay más de una página o más filas de las que
+               caben: con catorce asignaciones no pinta nada y estorba. -->
+          <div v-if="asignaciones.length > POR_PAGINA[0]" class="paginacion">
+            <span class="pag-cuenta">
+              <template v-if="porPagina === 0">
+                Las {{ asignaciones.length }}
+              </template>
+              <template v-else>
+                {{ primeraDeLaPagina + 1 }}–{{ primeraDeLaPagina + asignacionesVisibles.length }}
+                de {{ asignaciones.length }}
+              </template>
+            </span>
+
+            <label class="pag-cuantas">
+              Por página
+              <select v-model.number="porPagina">
+                <option v-for="n in POR_PAGINA" :key="n" :value="n">{{ n === 0 ? 'Todas' : n }}</option>
+              </select>
+            </label>
+
+            <span v-if="totalPaginas > 1" class="pag-pasos">
+              <button type="button" :disabled="paginaActual === 1" aria-label="Página anterior" @click="pagina = paginaActual - 1">
+                <AppIcon name="chevronLeft" :size="16" />
+              </button>
+              <span class="pag-donde">{{ paginaActual }} de {{ totalPaginas }}</span>
+              <button type="button" :disabled="paginaActual === totalPaginas" aria-label="Página siguiente" @click="pagina = paginaActual + 1">
+                <AppIcon name="chevronRight" :size="16" />
+              </button>
+            </span>
+          </div>
+
           <div v-else class="empty-state">
             <p>No hay asignaciones</p>
           </div>
@@ -3873,6 +3947,100 @@ body {
   .lado-lista button,
   .producto-flecha {
     transition: none;
+  }
+}
+
+/* --- Paginación ----------------------------------------------------------- */
+
+.fila-num {
+  width: 1%;
+  white-space: nowrap;
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.paginacion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-light);
+}
+
+.pag-cuenta {
+  font-variant-numeric: tabular-nums;
+}
+
+.pag-cuantas {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Empuja los pasos al otro extremo. */
+  margin-left: auto;
+}
+
+.pag-cuantas select {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.pag-pasos {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pag-pasos button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.pag-pasos button:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.pag-pasos button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pag-donde {
+  padding: 0 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .paginacion {
+    padding: 12px 16px;
+  }
+
+  /* En el móvil manda el paso de página; el "por página" cae debajo. */
+  .pag-cuantas {
+    margin-left: 0;
+    order: 3;
+  }
+
+  .pag-pasos {
+    margin-left: auto;
   }
 }
 
