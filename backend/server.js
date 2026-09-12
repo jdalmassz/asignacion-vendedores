@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import * as ventra from './ventra.js';
+import { arrancarEventos, avisar, escuchar, puedoVigilar, cuantosEscuchan, redisListo } from './eventos.js';
 import {
   listarAsignaciones, mesesConAsignaciones, crearAsignacion, borrarAsignacion,
   listarCobros, marcarCobro, desmarcarCobro, cobrosManualesSet,
@@ -398,6 +399,16 @@ app.post('/api/asignaciones', async (req, res, next) => {
       // Si Ventra no contesta no se bloquea el guardado: la asignación ya está escrita.
     }
 
+    /*
+     * Aviso inmediato, sin esperar al vigilante.
+     *
+     * Quien acaba de guardar quiere verlo YA en su pantalla y en la del de al lado. El
+     * vigilante es para lo que cambia solo —un pedido nuevo, una factura—; esto es un
+     * cambio nuestro y se sabe en el momento.
+     */
+    invalidate('');
+    void avisar('asignaciones');
+
     res.json({ success: true, id: nueva.id, asignacion: nueva, aviso });
   } catch (e) { next(e); }
 });
@@ -408,6 +419,9 @@ app.delete('/api/asignaciones/:id', async (req, res, next) => {
     const borrada = await borrarAsignacion(req.params.id);
 
     if (!borrada) return res.status(404).json({ success: false, error: 'Asignación no encontrada' });
+
+    invalidate('');
+    void avisar('asignaciones');
 
     res.json({ success: true });
   } catch (e) { next(e); }
@@ -918,8 +932,72 @@ async function avisarSiLaSucursalNoDevuelveNada() {
   }
 }
 
+/**
+ * GET /api/eventos — la pantalla se queda escuchando y no vuelve a preguntar.
+ *
+ * Ver `eventos.js`. Antes cada navegador pedía el panel entero cada 30 segundos para
+ * comparar y ver si algo había cambiado; ahora mira el servidor, una vez para todos.
+ */
+app.get('/api/eventos', (req, res) => {
+  escuchar(req, res);
+});
+
+/** Para saber desde fuera si esto está vivo y cuántas pantallas hay enganchadas. */
+app.get('/api/eventos/estado', (req, res) => {
+  res.json({ redis: redisListo(), escuchando: cuantosEscuchan() });
+});
+
+/**
+ * EL VIGILANTE: quien mira si algo cambió, una vez para todos.
+ *
+ * Recalcula el panel cada minuto, le saca una huella y **sólo si la huella cambió** avisa
+ * a las pantallas. Si nada cambió no se manda nada y nadie se entera, que es lo correcto.
+ *
+ * Un minuto es el mismo tiempo que ya vive la caché del servidor, así que esto no añade
+ * ni una consulta a Ventra: aprovecha la que se iba a hacer igual.
+ *
+ * El cerrojo en Redis es para el día que haya dos copias del backend: recalcularía una
+ * sola. Sin Redis lo coge siempre, que con una copia es lo que toca.
+ */
+const CADA_MS = 60 * 1000;
+let huellaAnterior = null;
+
+async function vigilar() {
+  try {
+    if (!(await puedoVigilar(50))) return;
+
+    const [resumen, ventas, asignaciones] = await Promise.all([
+      computeResumen(),
+      computeVentas(),
+      getAsignaciones(),
+    ]);
+    const huella = JSON.stringify([resumen, ventas, asignaciones]);
+
+    if (huellaAnterior === null) {
+      // La primera vuelta sólo toma la foto: avisar aquí sería avisar de nada.
+      huellaAnterior = huella;
+
+      return;
+    }
+
+    if (huella === huellaAnterior) return;
+
+    huellaAnterior = huella;
+    await avisar('panel');
+    console.log(`[vigilante] algo cambió; avisadas ${cuantosEscuchan()} pantallas de esta copia`);
+  } catch (e) {
+    // Que Ventra esté caído no puede matar el vigilante: la próxima vuelta lo intenta.
+    console.warn('[vigilante]', e.message);
+  }
+}
+
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Server running on http://localhost:${PORT}`);
   void avisarSiLaSucursalNoDevuelveNada();
+
+  await arrancarEventos();
+  // La primera vuelta va enseguida para tomar la foto; a partir de ahí, cada minuto.
+  void vigilar();
+  setInterval(vigilar, CADA_MS);
 });
