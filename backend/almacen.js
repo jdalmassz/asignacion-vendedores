@@ -22,6 +22,23 @@
  */
 import { MongoClient, ObjectId } from 'mongodb';
 
+/**
+ * El día de hoy en Cuba.
+ *
+ * El contenedor corre en UTC: con `toISOString()`, una asignación creada a las nueve de
+ * la noche se guardaba con la fecha de MAÑANA, y si era fin de mes se guardaba en el mes
+ * siguiente, donde la pantalla del mes en curso ya no la enseña. Quien la creó la ve
+ * desaparecer sin más.
+ */
+const FECHA_CUBA = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Havana',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+const hoyEnCuba = () => FECHA_CUBA.format(new Date());
+
 const URI = process.env.MONGO_URL || 'mongodb://localhost:27017';
 const NOMBRE_BASE = process.env.MONGO_DB || 'asignacion_vendedores';
 
@@ -67,7 +84,7 @@ export async function crearAsignacion(a) {
     producto_id: a.producto_id,
     producto_nombre: a.producto_nombre,
     cantidad: a.cantidad,
-    fecha: a.fecha || new Date().toISOString().split('T')[0],
+    fecha: a.fecha || hoyEnCuba(),
     creadoEn: new Date(),
   };
   const r = await d.collection('asignaciones').insertOne(doc);
@@ -104,7 +121,7 @@ export async function marcarCobro(folio) {
 
   await d.collection('cobros').updateOne(
     { folio: f },
-    { $setOnInsert: { folio: f, fecha: new Date().toISOString().split('T')[0] } },
+    { $setOnInsert: { folio: f, fecha: hoyEnCuba() } },
     { upsert: true },
   );
 }

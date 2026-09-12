@@ -130,12 +130,40 @@ function goodIdFromItem(it, index) {
   return findGoodIDForAsign({ producto_id: it.codigo || '', producto_nombre: it.producto || it.codigo || '' }, index) || null;
 }
 
+/**
+ * El día de hoy EN CUBA, `AAAA-MM-DD`.
+ *
+ * El contenedor corre en UTC y Cuba va cuatro horas por detrás. Con
+ * `new Date().toISOString()` —que es lo que había en media docena de sitios— a partir
+ * de las ocho de la tarde de La Habana el servidor ya cree que es mañana. El día 30 a
+ * las 20:30 eso significa que ya es octubre: la lista de asignaciones se queda vacía y
+ * el resumen pierde el mes entero, cuatro horas antes de tiempo, todos los meses.
+ *
+ * `en-CA` porque ese formato ES `AAAA-MM-DD`, y con `timeZone` el horario de verano lo
+ * resuelve el propio sistema en vez de restar cuatro a mano y equivocarse en marzo.
+ */
+const FECHA_CUBA = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Havana',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function hoyEnCuba() {
+  return FECHA_CUBA.format(new Date());
+}
+
+/** El mes en curso en Cuba, `AAAA-MM`. */
+function mesEnCuba() {
+  return hoyEnCuba().slice(0, 7);
+}
+
 /** El primer y el último día del mes en curso, `AAAA-MM-DD`. */
 function rangoDelMes() {
-  const hoy = new Date();
-  const a = hoy.getFullYear();
-  const m = String(hoy.getMonth() + 1).padStart(2, '0');
-  const ultimo = new Date(a, hoy.getMonth() + 1, 0).getDate();
+  const [a, m] = hoyEnCuba().split('-');
+  // Día 0 del mes siguiente = último del actual. `Date.UTC` para que el propio cálculo
+  // no vuelva a depender de la zona del proceso.
+  const ultimo = new Date(Date.UTC(Number(a), Number(m), 0)).getUTCDate();
 
   return [`${a}-${m}-01`, `${a}-${m}-${String(ultimo).padStart(2, '0')}`];
 }
@@ -271,7 +299,7 @@ app.get('/api/productos', async (req, res) => {
  * sabido por qué.
  */
 function mesActual() {
-  return new Date().toISOString().slice(0, 7);
+  return mesEnCuba();
 }
 
 function getAsignaciones(mes) {
@@ -285,13 +313,72 @@ app.get('/api/asignaciones', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * Lo que tiene que traer una asignación para poder guardarse.
+ *
+ * Antes no se miraba nada: el cuerpo entraba tal cual en Mongo. Una cantidad negativa,
+ * un texto donde va un número o un vendedor vacío se guardaban sin protestar y luego
+ * salían sumados en el resumen, donde ya no hay forma de saber de dónde vino el número
+ * raro. Es más barato no dejarlos entrar.
+ *
+ * Devuelve el motivo, o `null` si está bien.
+ */
+function loQueFaltaEnLaAsignacion({ vendedor, producto_id, producto_nombre, cantidad, fecha }) {
+  if (!String(vendedor || '').trim()) return 'Falta el vendedor.';
+  if (!String(producto_id || '').trim() && !String(producto_nombre || '').trim()) {
+    return 'Falta el producto.';
+  }
+
+  const n = Number(cantidad);
+  if (!Number.isFinite(n) || n <= 0) return 'La cantidad tiene que ser un número mayor que cero.';
+
+  // Sin tope habría que fiarse de que nadie se deje pulsado un cero. Con 10 sucursales
+  // de Procovar, nada real pasa de esto.
+  if (n > 1000000) return 'La cantidad es demasiado grande.';
+
+  if (fecha && !/^\d{4}-\d{2}-\d{2}$/.test(String(fecha))) {
+    return 'La fecha tiene que venir como AAAA-MM-DD.';
+  }
+
+  return null;
+}
+
 // POST /api/asignaciones
 app.post('/api/asignaciones', async (req, res, next) => {
   try {
     const { vendedor, producto_id, producto_nombre, cantidad, fecha } = req.body;
-    const nueva = await crearAsignacion({ vendedor, producto_id, producto_nombre, cantidad, fecha });
 
-    res.json({ success: true, id: nueva.id, asignacion: nueva });
+    const falta = loQueFaltaEnLaAsignacion(req.body || {});
+    if (falta) return res.status(400).json({ success: false, error: falta });
+
+    const nueva = await crearAsignacion({
+      vendedor: String(vendedor).trim(),
+      producto_id,
+      producto_nombre,
+      cantidad: Number(cantidad),
+      fecha,
+    });
+
+    /*
+     * Se avisa si el producto no casa con nada de Ventra.
+     *
+     * El resumen empareja cada asignación con un GoodID y, si no lo encuentra, se la
+     * salta en silencio (`if (!goodId) continue`). O sea: la asignación se guarda, sale
+     * en la lista, y en el resumen no aparece nunca. Aquí no se impide guardarla —puede
+     * ser un producto que todavía no ha llegado al almacén— pero se dice, que es lo que
+     * no pasaba.
+     */
+    let aviso = null;
+    try {
+      const goodsIndex = await loadGoodsIndex();
+      if (!findGoodIDForAsign({ producto_id, producto_nombre }, goodsIndex)) {
+        aviso = 'Guardada, pero este producto no coincide con ninguno de Ventra: no va a aparecer en el resumen hasta que coincida.';
+      }
+    } catch {
+      // Si Ventra no contesta no se bloquea el guardado: la asignación ya está escrita.
+    }
+
+    res.json({ success: true, id: nueva.id, asignacion: nueva, aviso });
   } catch (e) { next(e); }
 });
 
@@ -309,11 +396,10 @@ app.delete('/api/asignaciones/:id', async (req, res, next) => {
 // GET /api/ventas — desde MariaDB (operaciones despachadas Sign=-1)
 async function computeVentas() {
   return cached('ventas', 60 * 1000, async () => {
-    // El mes en curso. Antes eran dos fechas escritas a mano ('2026-09-01'..'2026-10-01').
-    const hoy = new Date();
-    const primero = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
-    const ultimo = hoy.toISOString().split('T')[0];
-    const rows = await ventra.ventas(primero, ultimo);
+    // El mes en curso, en hora de Cuba. Antes eran dos fechas escritas a mano
+    // ('2026-09-01'..'2026-10-01') y después `toISOString()`, que va en UTC.
+    const [primero] = rangoDelMes();
+    const rows = await ventra.ventas(primero, hoyEnCuba());
 
     const ventas = [];
     for (const row of rows) {
@@ -348,10 +434,9 @@ app.get('/api/ventas', async (req, res) => {
 // Los despachos reales del mes, por vendedor y producto. Salen de Ventra, no de MySQL.
 async function loadDespachos() {
   return cached('despachos', 60 * 1000, async () => {
-    const hoy = new Date();
-    const primero = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
+    const [primero, ultimo] = rangoDelMes();
     // `ventra.ventas` ya agrupa y ya filtra por tipo de operación y por la nota `V-`.
-    const rows = (await ventra.ventas(primero, hoy.toISOString().split('T')[0]))
+    const rows = (await ventra.ventas(primero, hoyEnCuba() < ultimo ? hoyEnCuba() : ultimo))
       .map((r) => ({ Note: r.Note, GoodID: r.GoodID, Qtty: r.TotalVendido }));
 
     const despachosMap = {};   // vendedor|GoodID -> packs despachados
