@@ -904,14 +904,14 @@ const errorDetalle = ref(null)
  * los lados y empujaba hacia abajo a los vendedores siguientes. Ver un pedido no
  * puede mover de sitio lo demás.
  */
-async function toggleDetalle(vendedor, producto_id, producto_nombre) {
+async function toggleDetalle(vendedor, producto_id, producto_nombre, prod = null) {
   const key = `${vendedor}|${producto_id}`
   if (filaExpandida.value === key) {
     filaExpandida.value = null
     return
   }
   filaExpandida.value = key
-  detalleDe.value = { vendedor, producto_id, producto_nombre }
+  detalleDe.value = { vendedor, producto_id, producto_nombre, prod }
   await traerDetalle()
 }
 
@@ -1200,7 +1200,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     type="button"
                     class="producto-cabeza"
                     :aria-expanded="esFilaExpandida(item.vendedor, prod.producto_id)"
-                    @click="toggleDetalle(item.vendedor, prod.producto_id, prod.producto_nombre)"
+                    @click="toggleDetalle(item.vendedor, prod.producto_id, prod.producto_nombre, prod)"
                   >
                     <span class="producto-nombre">{{ nombreCorto(prod.producto_nombre) }}</span>
                     <span class="producto-cifra">
@@ -1215,10 +1215,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     :aria-label="`De ${prod.asignado} asignados: ${prod.completada} despachados, de ellos ${prod.cambiado} con factura distinta; ${prod.en_proceso} pedidos sin salir`"
                   >
                     <span class="tramo t-despachado" :style="{ width: tramosDe(prod).despachado }"></span>
-                    <span class="tramo t-cambiado" :style="{ width: tramosDe(prod).cambiado }"></span>
                     <span class="tramo t-exceso" :style="{ width: tramosDe(prod).salioDeMas }"></span>
-                    <span class="tramo t-proceso" :style="{ width: tramosDe(prod).proceso }"></span>
-                    <span class="tramo t-cerrado" :style="{ width: tramosDe(prod).cerrado }"></span>
                     <span class="tramo t-libre" :style="{ width: tramosDe(prod).libre }"></span>
                   </div>
 
@@ -1239,44 +1236,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     <span v-else class="cotejo-igual">clavado</span>
                   </p>
 
+                  <!--
+                    Tres cifras y para. Llegó a haber seis por producto -y dos de ellas
+                    diciendo lo mismo con distinto nombre-, y una fila con seis números
+                    no se lee: se descifra. Lo que importa de un vistazo es cuánto salió,
+                    cuánto se pasó y cuánto queda sin pedir. Lo demás -en proceso,
+                    cerrado sin factura, salió sin pedido, lo que cambió- está en el
+                    detalle, a un clic, que es donde hay sitio para explicarlo.
+                  -->
                   <p class="marcas">
-                    <span v-if="prod.completada" class="marca m-despachado">Despachado <b>{{ prod.completada }}</b></span>
+                    <span class="marca m-despachado">Despachado <b>{{ prod.completada }}</b></span>
                     <span
-                      v-if="prod.cambiado"
-                      class="marca m-cambiado"
-                      title="Salió, pero la factura no coincidía con lo que se pidió"
-                    >Facturó y cambió <b>{{ prod.cambiado }}</b></span>
-                    <span v-if="prod.en_proceso" class="marca m-proceso">En proceso <b>{{ prod.en_proceso }}</b></span>
-                    <span
-                      v-if="prod.cerrado_sin_factura"
-                      class="marca m-cerrado"
-                      title="Pedidos que PEDIDO dio por completados y que Ventra nunca facturó. Ni salieron ni van a salir solos."
-                    >Cerrado sin factura <b>{{ prod.cerrado_sin_factura }}</b></span>
+                      v-if="tramosDe(prod).exceso"
+                      class="marca m-demas"
+                      :title="`Vendió ${prod.completada} contra ${prod.asignado} asignados`"
+                    >Vendió de más <b>{{ tramosDe(prod).exceso }}</b></span>
                     <span
                       v-if="tramosDe(prod).sinTocar"
                       class="marca m-libre"
                       title="Asignado que todavía nadie ha pedido"
                     >Sin pedir <b>{{ tramosDe(prod).sinTocar }}</b></span>
-                    <span
-                      v-if="prod.sin_pedido"
-                      class="marca m-sinpedido"
-                      title="Salió del almacén sin ningún pedido detrás: Ventra lo facturó y PEDIDO no tiene ese folio, o la factura salió sin folio en la nota"
-                    >Salió sin pedido <b>{{ prod.sin_pedido }}</b></span>
-                    <!--
-                      Vender por encima de lo asignado es una VENTA, no un fallo: son
-                      ventas completas del gestor. Por eso no va en rojo de alarma; lo
-                      que hay que ver es que salió y que está cobrado, no reñir por ello.
-                    -->
-                    <span
-                      v-if="tramosDe(prod).exceso"
-                      class="marca m-demas"
-                      :title="`Vendió ${prod.completada} contra ${prod.asignado} asignados: ${tramosDe(prod).exceso} por encima de su asignación`"
-                    >Vendió de más <b>{{ tramosDe(prod).exceso }}</b></span>
-                    <span
-                      v-if="tramosDe(prod).comprometidoDeMas"
-                      class="marca m-aviso"
-                      title="Lo que está pedido y todavía no ha salido se pasa de lo asignado. Todavía no ha salido: es un aviso, no un hecho."
-                    >Pedido de más <b>{{ tramosDe(prod).comprometidoDeMas }}</b></span>
                   </p>
 
                 </li>
@@ -1295,18 +1274,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
                   <b>{{ totalesDe(item).exceso }}</b> vendidos de más
-                </span>
-                <span v-if="totalesDe(item).sin_pedido" class="pie-sinpedido">
-                  <b>{{ totalesDe(item).sin_pedido }}</b> sin pedido
-                </span>
-                <span v-if="totalesDe(item).cambiado" class="pie-cambiado">
-                  <b>{{ totalesDe(item).cambiado }}</b> cambiados
-                </span>
-                <span v-if="totalesDe(item).en_proceso" class="pie-proceso">
-                  <b>{{ totalesDe(item).en_proceso }}</b> en proceso
-                </span>
-                <span v-if="totalesDe(item).cerrado_sin_factura" class="pie-cerrado">
-                  <b>{{ totalesDe(item).cerrado_sin_factura }}</b> cerrados sin factura
                 </span>
               </footer>
             </article>
@@ -1775,6 +1742,42 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
           </header>
 
           <div class="hoja-cuerpo">
+            <!--
+              Aquí sí caben todas las cifras, porque hay sitio para decir qué es cada
+              una. En la tarjeta sólo van tres; seis números seguidos sin explicación no
+              se leen.
+            -->
+            <dl v-if="detalleDe.prod" class="cifras">
+              <div>
+                <dt>Asignado</dt>
+                <dd>{{ detalleDe.prod.asignado }}</dd>
+              </div>
+              <div>
+                <dt>Despachado <small>facturas de Ventra</small></dt>
+                <dd class="c-verde">{{ detalleDe.prod.completada }}</dd>
+              </div>
+              <div v-if="detalleDe.prod.pedido">
+                <dt>Lo que pidieron <small>según PEDIDO</small></dt>
+                <dd>{{ detalleDe.prod.pedido }}</dd>
+              </div>
+              <div v-if="detalleDe.prod.cambiado">
+                <dt>Salió de facturas que cambiaron</dt>
+                <dd class="c-morado">{{ detalleDe.prod.cambiado }}</dd>
+              </div>
+              <div v-if="detalleDe.prod.sin_pedido">
+                <dt>Salió sin pedido detrás</dt>
+                <dd class="c-ambar">{{ detalleDe.prod.sin_pedido }}</dd>
+              </div>
+              <div v-if="detalleDe.prod.en_proceso">
+                <dt>En proceso <small>pedido y sin facturar</small></dt>
+                <dd class="c-ambar">{{ detalleDe.prod.en_proceso }}</dd>
+              </div>
+              <div v-if="detalleDe.prod.cerrado_sin_factura">
+                <dt>Cerrado sin factura <small>no va a salir solo</small></dt>
+                <dd class="c-rojo">{{ detalleDe.prod.cerrado_sin_factura }}</dd>
+              </div>
+            </dl>
+
             <p v-if="loadingDetalle" class="detalle-aviso">Cargando…</p>
             <div v-else-if="errorDetalle" class="detalle-fallo">
               <AppIcon name="alert" :size="18" />
@@ -3430,9 +3433,6 @@ body {
 }
 
 .t-despachado { background: var(--success); }
-.t-cambiado   { background: var(--purple); }
-.t-proceso    { background: var(--warning); }
-.t-cerrado    { background: var(--danger); }
 .t-exceso     { background: var(--purple); }
 .t-libre      { background: transparent; }
 
@@ -3472,14 +3472,8 @@ body {
 }
 
 .m-despachado { color: var(--success); }
-.m-cambiado   { color: var(--purple); }
-.m-proceso    { color: var(--warning); }
-.m-cerrado    { color: var(--danger); }
 .m-libre      { color: var(--text-light); }
-.m-sinpedido  { color: #b45309; }
 .m-demas      { color: var(--purple); }
-.m-aviso      { color: #b45309; }
-
 /* --- El detalle de los pedidos ------------------------------------------- */
 
 .detalle {
@@ -4399,6 +4393,40 @@ body {
   color: var(--success);
   font-weight: 600;
 }
+
+/* Las cifras del producto dentro de la ventana de detalle. */
+.cifras {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cifras dt {
+  font-size: 11px;
+  color: var(--text-light);
+  line-height: 1.3;
+}
+
+.cifras dt small {
+  display: block;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.cifras dd {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.c-verde  { color: var(--success); }
+.c-morado { color: var(--purple); }
+.c-ambar  { color: #b45309; }
+.c-rojo   { color: var(--danger); }
 
 /* ==========================================================================
    LOS TAMAÑOS, DE PEQUEÑO A GRANDE
