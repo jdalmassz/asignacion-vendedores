@@ -59,13 +59,43 @@ async function pedir(ruta) {
 }
 
 /**
+ * El precio de cada producto, sacado de lo que se ha vendido.
+ *
+ * Ventra **no publica el precio** ni en `/axis/products` ni en `/axis/stock`: sólo aparece
+ * en las ventas, como `priceOut`. En MySQL venía en `goods.PriceOut1`, así que al pasar a
+ * la API el precio se perdía y todo salía a $0.00.
+ *
+ * Se toma el precio de la venta MÁS RECIENTE de cada producto, que es el que está vigente.
+ * Un producto que no se ha vendido nunca se queda sin precio — y eso es honesto: no lo
+ * sabemos, y poner cero diría que es gratis.
+ */
+async function preciosRecientes() {
+  const hoy = new Date();
+  const desde = new Date(hoy.getTime() - 90 * 24 * 3600 * 1000).toISOString().split('T')[0];
+  const d = await pedir(`/axis/sales?database=${DB}&from=${desde}&to=${hoy.toISOString().split('T')[0]}&limit=100000`);
+  const precios = new Map();
+
+  // De más viejo a más nuevo, así el último que se escribe es el precio vigente.
+  for (const f of (d.rows || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)))) {
+    const precio = Number(f.priceOut);
+
+    if (f.productCode && Number.isFinite(precio) && precio > 0) precios.set(f.productCode, precio);
+  }
+
+  return precios;
+}
+
+/**
  * Los productos, con la misma forma que tenían las filas de `goods`.
  *
  * Se conservan los nombres de campo de antes (`ID`, `Code`, `Name`) para no tener que
  * tocar el resto del código, que los usa por todas partes. `ID` pasa a ser el código.
  */
 export async function productos() {
-  const filas = await pedir(`/axis/products?database=${DB}&limit=5000`);
+  const [filas, precios] = await Promise.all([
+    pedir(`/axis/products?database=${DB}&limit=5000`),
+    preciosRecientes().catch(() => new Map()),
+  ]);
 
   return (Array.isArray(filas) ? filas : filas.items || [])
     .filter((p) => p.isActive !== false)
@@ -73,7 +103,7 @@ export async function productos() {
       ID: p.sku,
       Code: p.sku,
       Name: p.name,
-      PriceOut1: p.priceOut ?? null,
+      PriceOut1: precios.get(p.sku) ?? null,
       Measure1: p.unit ?? null,
       Measure2: null,
     }));
@@ -127,7 +157,10 @@ export async function ventas(desde, hasta) {
  * se pone el propio nombre, que es lo único que el código usaba para agrupar.
  */
 export async function almacen() {
-  const d = await pedir(`/axis/stock?database=${DB}`);
+  const [d, precios] = await Promise.all([
+    pedir(`/axis/stock?database=${DB}`),
+    preciosRecientes().catch(() => new Map()),
+  ]);
   // Ver `SUCURSAL`: este filtro no sobra, Ventra devuelve todas.
   const items = (d.items || []).filter(
     (i) => String(i.branchName || '').toUpperCase() === SUCURSAL.toUpperCase(),
@@ -135,26 +168,35 @@ export async function almacen() {
   const filas = [];
 
   for (const it of items) {
-    // El stock viene por producto con la lista de almacenes donde está; se despliega una
-    // fila por almacén, que es como venía de SQL.
-    const nombres = it.objectNames?.length ? it.objectNames : [it.branchName || 'Almacén'];
+    /**
+     * La cantidad de CADA almacén, no el total repartido a ojo.
+     *
+     * `it.quantity` es la suma de todos, y `it.objects` trae el desglose real con su
+     * propia `quantity`. Atribuir el total al primero de la lista pone el stock donde no
+     * está: las 7.072 Parranda salían en «ALM CAMAGUEY» cuando están en «PV CAMAGUEY».
+     */
+    const desglose = Array.isArray(it.objects) && it.objects.length
+      ? it.objects
+      : [{ name: it.branchName || 'Almacén', quantity: it.quantity }];
 
-    for (const nombre of nombres) {
+    for (const o of desglose) {
+      const stock = Number(o.quantity) || 0;
+
+      if (stock <= 0) continue;
+
       filas.push({
-        object_id: nombre,
-        almacen: nombre,
+        object_id: o.id ?? o.name,
+        almacen: o.name || it.branchName || 'Almacén',
         ID: it.productCode,
         Code: it.productCode,
         Name: it.productName,
-        PriceOut1: it.priceOut ?? null,
-        // Cuando un producto está en varios almacenes Ventra da el total, no el reparto.
-        // Se atribuye entero al primero en vez de inventar un reparto que no conocemos.
-        stock: nombres.indexOf(nombre) === 0 ? Number(it.quantity) || 0 : 0,
+        PriceOut1: precios.get(it.productCode) ?? null,
+        stock,
       });
     }
   }
 
-  return filas.filter((f) => f.stock > 0 && f.Name && f.Name !== 'ENTREGA A DOMICILIO');
+  return filas.filter((f) => f.Name && f.Name !== 'ENTREGA A DOMICILIO');
 }
 
 export { VentraNoDisponible };
