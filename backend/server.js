@@ -452,26 +452,24 @@ app.get('/api/ventas', async (req, res) => {
 });
 
 /**
- * Lo DESPACHADO del mes, que es lo FACTURADO.
+ * Lo DESPACHADO del mes: las FACTURAS DE VENTRA.
  *
- * Se arma con las dos fuentes, porque ninguna sola basta:
+ * Ventra manda, y punto. Lo que salió del almacén es lo que Ventra facturó: es el
+ * hecho físico y no depende de que nadie haya tomado bien un pedido. Así estaba antes
+ * y así se queda.
  *
- *  - **PEDIDO** manda para todo pedido que tenga factura. Y se usan las líneas de la
- *    FACTURA (`lineasFactura`), no las del pedido: cuando la factura cambió, lo que
- *    salió del almacén es lo facturado. El folio PJR25-260912-1519 pidió 7 de Parranda
- *    y se facturaron 8; lo que cuenta es 8. Da igual si fue `igual` o `cambiado`: en
- *    los dos casos se facturó.
+ * PEDIDO entra como EXTRA, no como fuente. Sirve para dos cosas que Ventra sola no
+ * puede decir, y las dos se calculan cruzando por el folio de la nota (`P-...`):
  *
- *  - **VENTRA** rellena lo que PEDIDO no tiene. A veces se vende algo que no está en
- *    pedidos —este mes, 464 packs de vodka a nombre de IRADIEL facturados sin poner el
- *    `P-` en la nota, y 5.649 packs contra folios que PEDIDO no conoce—. Si se contara
- *    sólo lo que está en PEDIDO, eso desaparecería del almacén sin dejar rastro.
+ *   - `pedidoMap`   lo que PIDIÓ el cliente, que sale del campo `pedido` de cada línea
+ *                   de `lineasFactura`. Es el otro lado de la comparación: se pidieron
+ *                   692, se facturaron 852.
+ *   - `cambiadoMap` de lo facturado, cuánto salió de un pedido marcado `cambiado`.
+ *   - `sinPedidoMap` lo que Ventra facturó y PEDIDO no tiene: folio desconocido, o
+ *                   factura sin `P-` en la nota. Este mes, 147 packs de ALEXANDER, 40
+ *                   de DEYANIRA y 464 de vodka de IRADIEL.
  *
- * El folio de la nota de Ventra es lo que ata las dos. Un folio se cuenta UNA vez: si
- * está en PEDIDO con factura, por PEDIDO; si no, por Ventra.
- *
- * La fecha la pone siempre Ventra: se recorren sus ventas del mes, así que un pedido de
- * agosto facturado en septiembre cuenta en septiembre, que es cuando salió.
+ * Los tres son subconjuntos o comparaciones de lo de Ventra; ninguno lo sustituye.
  */
 function folioDeLaNota(nota) {
   const m = String(nota || '').match(/(?:^|;)\s*P-([A-Z0-9\-]+);/i);
@@ -502,64 +500,55 @@ async function loadDespachos() {
       if (o.folio) pedidoPorFolio.set(o.folio.toUpperCase(), o);
     }
 
-    const despachosMap = {};       // vendedor|GoodID -> packs facturados
-    const pedidoMap = {};          // lo que se PIDIÓ de eso mismo, para poder comparar
-    const cambiadoMap = {};        // de eso, lo que salió con factura distinta a lo pedido
-    const sinPedidoMap = {};       // lo que Ventra facturó y PEDIDO no tiene
+    const despachosMap = {};    // vendedor|GoodID -> packs facturados por Ventra
+    const cambiadoMap = {};     // de eso, lo salido de un pedido que cambió
+    const sinPedidoMap = {};    // de eso, lo que no tiene pedido detrás
+    const pedidoMap = {};       // lo que se PIDIÓ, para comparar. No entra en la barra.
     const foliosDespachados = new Set();
-    const yaContado = new Set();
+    const yaSumadoElPedido = new Set();
 
     const sumar = (mapa, clave, cuanto) => {
       mapa[clave] = (mapa[clave] || 0) + (Number(cuanto) || 0);
     };
 
     for (const row of rows) {
-      const folio = folioDeLaNota(row.Note);
-      if (folio) foliosDespachados.add(folio);
-
-      const pedido = folio ? pedidoPorFolio.get(folio) : null;
-      const tieneFactura = pedido
-        && (pedido.facturaEstado === 'igual' || pedido.facturaEstado === 'cambiado');
-
-      if (tieneFactura) {
-        // Una vez por folio: sus líneas ya traen TODOS los productos de esa factura.
-        if (yaContado.has(folio)) continue;
-        yaContado.add(folio);
-
-        const vendedor = normalizeVendedorName('V-' + (pedido.vendedor?.nombre || ''))
-          || normalizeVendedorName(row.Note);
-        if (!vendedor) continue;
-
-        for (const linea of lineasDeLaFactura(pedido)) {
-          if (!linea.codigo) continue;
-
-          const clave = `${vendedor}|${linea.codigo}`;
-
-          sumar(despachosMap, clave, linea.cantidad);
-
-          /*
-           * Cada línea de la factura trae LOS DOS lados: `pedido` es lo que pidió el
-           * cliente y `cantidad` lo que se le facturó. Esa pareja es para lo que sirve
-           * esta pantalla: comprobar pedido contra factura. 27 líneas viejas del mes no
-           * traen `pedido`; ésas no suman por ese lado y se quedan fuera de la
-           * comparación en vez de contarse como cero, que sería inventar una diferencia.
-           */
-          if (linea.pedido != null) sumar(pedidoMap, clave, linea.pedido);
-
-          if (pedido.facturaEstado === 'cambiado') sumar(cambiadoMap, clave, linea.cantidad);
-        }
-
-        continue;
-      }
-
-      // Sin pedido con factura detrás: lo que dice Ventra es lo único que hay.
       const vendedor = normalizeVendedorName(row.Note);
       if (!vendedor) continue;
 
       const clave = `${vendedor}|${row.GoodID}`;
+      const folio = folioDeLaNota(row.Note);
 
+      if (folio) foliosDespachados.add(folio);
+
+      // LA FUENTE: lo que Ventra facturó.
       sumar(despachosMap, clave, row.TotalVendido);
-      sumar(sinPedidoMap, clave, row.TotalVendido);
+
+      const pedido = folio ? pedidoPorFolio.get(folio) : null;
+      const conFactura = pedido
+        && (pedido.facturaEstado === 'igual' || pedido.facturaEstado === 'cambiado');
+
+      if (!conFactura) {
+        sumar(sinPedidoMap, clave, row.TotalVendido);
+        continue;
+      }
+
+      if (pedido.facturaEstado === 'cambiado') sumar(cambiadoMap, clave, row.TotalVendido);
+
+      /*
+       * Lo pedido se suma UNA vez por folio: sus líneas traen todos los productos de esa
+       * factura, y el folio aparece en tantas filas de Ventra como productos tenga.
+       *
+       * Las líneas viejas sin el campo `pedido` no suman por este lado. Contarlas como
+       * cero inventaría una diferencia que no existe.
+       */
+      if (yaSumadoElPedido.has(folio)) continue;
+      yaSumadoElPedido.add(folio);
+
+      for (const linea of lineasDeLaFactura(pedido)) {
+        if (!linea.codigo || linea.pedido == null) continue;
+
+        sumar(pedidoMap, `${vendedor}|${linea.codigo}`, linea.pedido);
+      }
     }
 
     return { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, foliosDespachados };
