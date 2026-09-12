@@ -3,7 +3,18 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import axios from 'axios'
 import AppIcon from './components/AppIcon.vue'
 
-const API_URL = 'http://localhost:4000/api'
+/**
+ * Dónde está la API.
+ *
+ * Estaba escrita a mano como `http://localhost:4000/api`, que funciona en el portátil de
+ * quien la escribió y en ningún otro sitio: puesto en el servidor, el navegador del
+ * usuario intentaría hablar con SU propio ordenador.
+ *
+ * Por defecto `/api`, que es una ruta relativa: el mismo nginx que sirve la página la
+ * reenvía al backend por la red interna. `VITE_API_URL` permite apuntar a otro sitio en
+ * desarrollo — Vite la sustituye al construir, no al arrancar.
+ */
+const API_URL = import.meta.env.VITE_API_URL || '/api'
 
 // Estado de los datos
 const vendedores = ref([])

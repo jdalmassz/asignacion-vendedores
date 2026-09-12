@@ -1,3 +1,6 @@
 node_modules
 *.log
 .env
+
+# Datos viejos: ahora se guarda en MongoDB. Ver DESPLIEGUE.md
+cobros.json
