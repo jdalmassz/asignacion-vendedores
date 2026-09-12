@@ -19,16 +19,33 @@ Dos colecciones, en la base `asignacion_vendedores`:
 - **`asignaciones`** — `{ vendedor, producto_id, producto_nombre, cantidad, fecha }`
 - **`cobros`** — `{ folio, fecha }`, con el folio **único**
 
-MySQL se sigue usando, pero **sólo para leer** productos, almacén y ventas. No se escribe
-nada ahí.
+**Los productos, las ventas y el almacén salen de la API de Ventra**, no de MySQL. El
+código leía la base `camaguey` en `192.168.1.217` —una dirección de la red local de la
+sucursal— y eso desde el servidor no se alcanza: resumen, almacén y dashboard daban 500.
+
+| Antes, en MySQL | Ahora, en Ventra |
+|---|---|
+| `goods` | `/axis/products` |
+| `operations` | `/axis/sales` |
+| `store` | `/axis/stock` |
+
+Dos cosas que esto obliga y conviene saber:
+
+- **Se cruza por código de producto**, no por el `GoodID` numérico: Ventra no publica ese
+  número. Es más robusto, porque el código es el mismo en todas las sucursales.
+- **`/axis/stock` ignora el parámetro `database`** y devuelve las diez sucursales. Se
+  filtra por `VENTRA_SUCURSAL`; sin eso, el almacén de Camagüey saldría mezclado con el de
+  La Habana y Santiago.
 
 ## Variables de entorno
 
 ```
 MONGO_URL            mongodb://usuario:clave@procovar-mongo-ylchvv:27017/?authSource=admin
 MONGO_DB             asignacion_vendedores
-DB_HOST              procovar-caja-db-qvrhew     (MySQL, sólo lectura)
-DB_USER  DB_PASSWORD  DB_NAME
+VENTRA_API_URL       http://10.188.2.2:3001/api/external-api
+VENTRA_API_TOKEN     el token de Ventra (el mismo que usa analitics)
+VENTRA_DB            camaguey
+VENTRA_SUCURSAL      CAMAGUEY
 PROCOVAR_API_BASE    https://pedidos.procovar.cloud/api
 PROCOVAR_API_KEY     la clave de integración
 PROCOVAR_SUCURSAL_ID

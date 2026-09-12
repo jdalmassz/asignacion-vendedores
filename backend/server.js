@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
-import mysql from 'mysql2/promise';
+import * as ventra from './ventra.js';
 import {
   listarAsignaciones, crearAsignacion, borrarAsignacion,
   listarCobros, marcarCobro, desmarcarCobro, cobrosManualesSet,
@@ -23,22 +23,13 @@ const API_BASE = process.env.PROCOVAR_API_BASE || 'https://pedidos.procovar.clou
 const API_KEY = process.env.PROCOVAR_API_KEY || '';
 const SUCURSAL_ID = process.env.PROCOVAR_SUCURSAL_ID || '';
 
-// MySQL config (productos y almacen)
-const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'camaguey',
-  charset: 'utf8mb4'
-};
-
-// Pool de conexiones: se reutilizan en vez de abrir/cerrar una por request.
-const pool = mysql.createPool({
-  ...dbConfig,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
+/**
+ * Los datos del punto de venta ya no salen de MySQL, sino de la API de Ventra.
+ *
+ * La base `camaguey` vive en la red local de la sucursal (`192.168.1.217`) y desde el
+ * servidor no se alcanza. Ventra la publica por HTTP y es lo que usa analitics. Ver
+ * `ventra.js`.
+ */
 
 // Caché en memoria con TTL. cachea la promesa para evitar "thundering herd"
 // (varias requests concurrentes comparten el mismo fetch).
@@ -110,8 +101,7 @@ function makeGoodsIndex(goods) {
 
 async function loadGoodsIndex() {
   return cached('goodsIndex', 5 * 60 * 1000, async () => {
-    const [rows] = await pool.query(`SELECT ID, Code, Name FROM goods WHERE Deleted = 0`);
-    return makeGoodsIndex(rows);
+    return makeGoodsIndex(await ventra.productos());
   });
 }
 
@@ -302,14 +292,11 @@ app.delete('/api/asignaciones/:id', async (req, res, next) => {
 // GET /api/ventas — desde MariaDB (operaciones despachadas Sign=-1)
 async function computeVentas() {
   return cached('ventas', 60 * 1000, async () => {
-    const [rows] = await pool.query(`
-      SELECT o.Note, o.GoodID, o.Date, o.PartnerID, g.Name, g.PriceOut1, g.Measure1, g.Measure2, SUM(o.Qtty) as TotalVendido
-      FROM operations o
-      LEFT JOIN goods g ON o.GoodID = g.ID
-      WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
-      AND o.Sign = -1 AND Note LIKE '%V-%'
-      GROUP BY o.Note, o.GoodID, o.Date, o.PartnerID, g.Name, g.PriceOut1, g.Measure1, g.Measure2
-    `);
+    // El mes en curso. Antes eran dos fechas escritas a mano ('2026-09-01'..'2026-10-01').
+    const hoy = new Date();
+    const primero = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
+    const ultimo = hoy.toISOString().split('T')[0];
+    const rows = await ventra.ventas(primero, ultimo);
 
     const ventas = [];
     for (const row of rows) {
@@ -341,15 +328,14 @@ app.get('/api/ventas', async (req, res) => {
   }
 });
 
-// Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID (cacheado)
+// Los despachos reales del mes, por vendedor y producto. Salen de Ventra, no de MySQL.
 async function loadDespachos() {
   return cached('despachos', 60 * 1000, async () => {
-    const [rows] = await pool.query(`
-      SELECT o.Note, o.GoodID, o.Qtty
-      FROM operations o
-      WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
-      AND o.Sign = -1 AND Note LIKE '%V-%'
-    `);
+    const hoy = new Date();
+    const primero = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
+    // `ventra.ventas` ya agrupa y ya filtra por tipo de operación y por la nota `V-`.
+    const rows = (await ventra.ventas(primero, hoy.toISOString().split('T')[0]))
+      .map((r) => ({ Note: r.Note, GoodID: r.GoodID, Qtty: r.TotalVendido }));
 
     const despachosMap = {};   // vendedor|GoodID -> packs despachados
     const foliosDespachados = new Set();
@@ -452,16 +438,8 @@ app.get('/api/resumen', async (req, res) => {
 // GET /api/almacen — desde MariaDB (store, inventario real)
 async function computeAlmacen() {
   return cached('almacen', 60 * 1000, async () => {
-    const [rows] = await pool.query(`
-      SELECT o.ID AS object_id, o.Name AS almacen, g.ID, g.Code, g.Name, g.PriceOut1, SUM(s.Qtty) AS stock
-      FROM store s
-      LEFT JOIN goods g ON s.GoodID = g.ID
-      LEFT JOIN objects o ON s.ObjectID = o.ID
-      WHERE s.Qtty > 0
-        AND g.Name <> 'ENTREGA A DOMICILIO'
-      GROUP BY o.ID, o.Name, g.ID, g.Code, g.Name, g.PriceOut1
-      HAVING stock > 0
-    `);
+    const rows = await ventra.almacen();
+
     const almacenes = {};
     for (const r of rows) {
       if (!r.Name || !r.ID) continue;
