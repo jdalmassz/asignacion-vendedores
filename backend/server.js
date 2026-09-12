@@ -81,7 +81,7 @@ async function leerDeLaCache(key) {
   return crudo;
 }
 
-function calcular(key, fn) {
+function calcular(key, fn, compartida = true) {
   const yaVa = enCurso.get(key);
 
   if (yaVa) return yaVa;
@@ -92,7 +92,7 @@ function calcular(key, fn) {
       const guardado = { ts: Date.now(), valor };
 
       enMemoria.set(key, guardado);
-      await guardarCache(CACHE_PREFIX + key, guardado);
+      if (compartida) await guardarCache(CACHE_PREFIX + key, guardado);
 
       return valor;
     })
@@ -103,15 +103,25 @@ function calcular(key, fn) {
   return promesa;
 }
 
-async function cached(key, ttlMs, fn) {
-  const guardado = await leerDeLaCache(key);
+/**
+ * @param compartida  si el valor puede viajar por Redis.
+ *
+ * `false` para lo que NO sobrevive a un `JSON.stringify`. El índice de productos guarda
+ * tres `Map`, y un `Map` serializado a JSON vuelve como `{}`: al reiniciar el proceso y
+ * leerlo de Redis reventaba con «index.byRawCode.get is not a function». En memoria no se
+ * notaba porque el espejo guarda el objeto tal cual.
+ *
+ * Se queda en memoria: es barato de rehacer y se rehace una vez por proceso.
+ */
+async function cached(key, ttlMs, fn, { compartida = true } = {}) {
+  const guardado = compartida ? await leerDeLaCache(key) : enMemoria.get(key);
 
-  if (!guardado) return calcular(key, fn);
+  if (!guardado) return calcular(key, fn, compartida);
 
   // Pasado de hora: se devuelve igual y se refresca por detrás. Si el refresco falla, el
   // dato viejo sigue ahí, que es mejor que un error en pantalla.
   if (Date.now() - guardado.ts >= ttlMs) {
-    calcular(key, fn).catch((e) => console.warn(`[cache] no se pudo refrescar ${key}:`, e.message));
+    calcular(key, fn, compartida).catch((e) => console.warn(`[cache] no se pudo refrescar ${key}:`, e.message));
   }
 
   return guardado.valor;
@@ -180,9 +190,14 @@ function makeGoodsIndex(goods) {
 }
 
 async function loadGoodsIndex() {
-  return cached('goodsIndex', 5 * 60 * 1000, async () => {
-    return makeGoodsIndex(await ventra.productos());
-  });
+  // `compartida: false`: esto guarda `Map` y un `Map` no sobrevive a JSON. Ver `cached`.
+  return cached(
+    'goodsIndex',
+    5 * 60 * 1000,
+    async () => makeGoodsIndex(await ventra.productos()),
+    // Guarda tres `Map`, y un `Map` no sobrevive a JSON: se queda en memoria. Ver `cached`.
+    { compartida: false },
+  );
 }
 
 function findGoodIDForAsign(a, index) {
@@ -656,7 +671,20 @@ async function loadDespachos() {
       }
     }
 
-    return { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, foliosDespachados };
+    /*
+     * Los folios salen como ARRAY, no como `Set`.
+     *
+     * Esto se guarda en Redis y pasa por `JSON.stringify`: un `Set` vuelve como `{}` y
+     * quien llamara a `.has()` reventaría. Con array viaja bien y quien lo use hace su
+     * propio `Set`, que es una línea.
+     */
+    return {
+      despachosMap,
+      pedidoMap,
+      cambiadoMap,
+      sinPedidoMap,
+      folios: [...foliosDespachados],
+    };
   });
 }
 
@@ -687,7 +715,8 @@ async function computeResumen() {
   }
 
   // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
-  const { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, foliosDespachados } = await loadDespachos();
+  const { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, folios } = await loadDespachos();
+  const foliosDespachados = new Set(folios);
 
   /**
    * Lo que todavía no ha salido del almacén, y de dónde sale lo que sí salió.
@@ -880,7 +909,8 @@ async function computeDetalleProceso() {
   const goodsIndex = await loadGoodsIndex();
 
   // Despachos reales para saber qué folios ya se despacharon
-  const { foliosDespachados } = await loadDespachos();
+  const { folios } = await loadDespachos();
+  const foliosDespachados = new Set(folios);
 
   const result = {};
   const cobrosManuales = await cobrosManualesSet();
