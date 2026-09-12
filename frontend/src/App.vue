@@ -742,6 +742,8 @@ const filaExpandida = ref(null)
 /** De qué vendedor y producto es el detalle que está abierto. */
 const detalleDe = ref(null)
 const loadingDetalle = ref(false)
+/** Qué falló al traer el detalle, para poder decirlo y ofrecer reintentar. */
+const errorDetalle = ref(null)
 
 /**
  * Abre el detalle de una fila.
@@ -760,16 +762,46 @@ async function toggleDetalle(vendedor, producto_id, producto_nombre) {
   }
   filaExpandida.value = key
   detalleDe.value = { vendedor, producto_id, producto_nombre }
-  if (detalleProceso.value.length === 0) {
-    loadingDetalle.value = true
-    try {
-      const res = await axios.get(`${API_URL}/detalle-proceso`)
-      detalleProceso.value = res.data.detalle
-    } catch (e) {
-      console.error('Error cargando detalle:', e)
-    } finally {
-      loadingDetalle.value = false
-    }
+  await traerDetalle()
+}
+
+/**
+ * Trae los pedidos sin despachar.
+ *
+ * Dos cosas que estaban mal y se notaban en la misma pantalla:
+ *
+ * 1. Sin tiempo límite. Si la respuesta se corta a medias -pasa al redesplegar el
+ *    backend, mientras el contenedor viejo se cambia por el nuevo- la petición se
+ *    queda colgada para siempre y el cartel de "Cargando…" no se va nunca. Con un
+ *    tope, a los 20 segundos se rinde y se puede reintentar.
+ *
+ * 2. Se pedía sólo si la lista estaba vacía, o sea UNA vez por sesión. Quien dejara
+ *    la pestaña abierta toda la mañana seguía viendo los pedidos de las nueve. El
+ *    servidor ya guarda su propia copia un minuto, así que volver a pedirlo pasado
+ *    ese minuto no le cuesta nada.
+ */
+const DETALLE_FRESCO_MS = 60 * 1000
+let detalleTraidoEn = 0
+
+async function traerDetalle(forzar = false) {
+  const viejo = Date.now() - detalleTraidoEn > DETALLE_FRESCO_MS
+  if (!forzar && detalleProceso.value.length > 0 && !viejo) return
+
+  loadingDetalle.value = true
+  errorDetalle.value = null
+  try {
+    const res = await axios.get(`${API_URL}/detalle-proceso`, { timeout: 20000 })
+    detalleProceso.value = res.data.detalle || []
+    detalleTraidoEn = Date.now()
+  } catch (e) {
+    console.error('Error cargando detalle:', e)
+    // Se dice qué pasó y se deja reintentar: un cartel eterno no informa de nada.
+    errorDetalle.value =
+      e.code === 'ECONNABORTED'
+        ? 'El servidor tardó demasiado en responder.'
+        : 'No se pudo cargar el detalle.'
+  } finally {
+    loadingDetalle.value = false
   }
 }
 
@@ -1025,9 +1057,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             :class="{ activo: seccionActiva === s.id }"
           ></span>
         </div>
+      </section>
 
-        <!-- Resumen por Vendedor -->
-        <div v-if="seccionActiva === 'resumen'">
+      <!--
+        Cada sección en su propia tarjeta, con su cabecera.
+
+        Resumen y Asignaciones vivían DENTRO de la tarjeta del selector, así que la
+        tabla arrancaba pegada a las pestañas, sin separación ni título, mientras
+        Almacén y Ventas sí tenían la suya. Eran dos maneras distintas de enseñar lo
+        mismo en la misma pantalla.
+      -->
+      <section v-if="seccionActiva === 'resumen'" class="card">
+        <div class="card-header">
+          <h2><AppIcon name="clipboard" :size="18" /> Resumen por Vendedor</h2>
+          <span class="badge">{{ resumenPorVendedor.length }} {{ resumenPorVendedor.length === 1 ? 'vendedor' : 'vendedores' }}</span>
+        </div>
+        <div>
           <div v-if="resumenPorVendedor.length > 0" class="vendedor-grid">
             <article v-for="item in resumenPorVendedor" :key="item.vendedor" class="vendedor-card">
               <header class="vendedor-header">
@@ -1092,9 +1137,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             <p>No hay resumen de asignaciones</p>
           </div>
         </div>
+      </section>
 
-        <!-- Mis Asignaciones -->
-        <div v-if="seccionActiva === 'asignaciones'">
+      <section v-if="seccionActiva === 'asignaciones'" class="card">
+        <div class="card-header">
+          <h2><AppIcon name="edit" :size="18" /> Asignaciones del Mes</h2>
+          <span class="badge">{{ asignaciones ? asignaciones.length : 0 }} {{ (asignaciones ? asignaciones.length : 0) === 1 ? 'asignación' : 'asignaciones' }}</span>
+        </div>
+        <div>
           <div v-if="asignaciones && asignaciones.length > 0" class="table-wrapper">
             <table class="data-table">
               <thead>
@@ -1378,6 +1428,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
 
           <div class="hoja-cuerpo">
             <p v-if="loadingDetalle" class="detalle-aviso">Cargando…</p>
+            <div v-else-if="errorDetalle" class="detalle-fallo">
+              <AppIcon name="alert" :size="18" />
+              <p>{{ errorDetalle }}</p>
+              <button type="button" class="btn-reintentar" @click="traerDetalle(true)">Reintentar</button>
+            </div>
             <p v-else-if="pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id).length === 0" class="detalle-aviso">
               No queda ningún pedido por despachar de este producto
             </p>
@@ -1455,6 +1510,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
   -webkit-font-smoothing: antialiased;
   --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
   --radius: 12px;
+}
+
+/*
+ * El hueco de la barra de desplazamiento se reserva siempre.
+ *
+ * Al abrir la ventana de detalle se bloquea el desplazamiento de la página, la barra
+ * desaparece y la página gana de golpe los 9 px que ocupaba: todo -cabecera, tarjetas,
+ * tablas- da un salto hacia la derecha justo en el momento en que aparece la ventana.
+ * Con el hueco reservado no hay nada que devolver y no se mueve nada.
+ */
+html {
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -3545,6 +3612,39 @@ body {
   .seccion-tabs button::after {
     transition: none;
   }
+}
+
+.detalle-fallo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 10px;
+  text-align: center;
+  color: var(--danger);
+}
+
+.detalle-fallo p {
+  font-size: 13px;
+  color: var(--text-light);
+}
+
+.btn-reintentar {
+  padding: 8px 18px;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-reintentar:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 /* ==========================================================================
