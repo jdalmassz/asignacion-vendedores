@@ -15,6 +15,12 @@
       <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
       <line x1="12" y1="22.08" x2="12" y2="12"></line>
     </template>
+    <template v-else-if="name === 'chevronLeft'">
+      <polyline points="15 18 9 12 15 6"></polyline>
+    </template>
+    <template v-else-if="name === 'chevronRight'">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </template>
     <template v-else-if="name === 'plus'">
       <line x1="12" y1="5" x2="12" y2="19"></line>
       <line x1="5" y1="12" x2="19" y2="12"></line>
