@@ -75,6 +75,16 @@ function selectCalendarDay(day) {
   showCalendar.value = false
 }
 
+function abrirCalAsignacion() {
+  const f = nuevaAsignacion.value.fecha
+  if (f) {
+    const d = new Date(f + 'T00:00:00')
+    calMonth.value = d.getMonth()
+    calYear.value = d.getFullYear()
+  }
+  showCalendar.value = !showCalendar.value
+}
+
 function abrirCalRango() {
   if (!showCalRango.value) {
     if (filtroFechaDesde.value) {
@@ -155,7 +165,9 @@ let autoRefresh = null
 
 let snapshotResumen = ''
 let snapshotVentas = ''
+let snapshotAsignaciones = ''
 const hayCambios = ref(false)
+const hayCambiosAsig = ref(false)
 
 function snapshotDe(arr) {
   return JSON.stringify(arr || [])
@@ -171,14 +183,15 @@ function limpiarAutoRefresh() {
 async function refreshLigero() {
   if (loading.value) return
   try {
-    const [rResumen, rVentas] = await Promise.all([
-      axios.get(`${API_URL}/resumen`),
-      axios.get(`${API_URL}/ventas`)
-    ])
-    const nuevoSnapResumen = snapshotDe(rResumen.data.resumen)
-    const nuevoSnapVentas = snapshotDe(rVentas.data.ventas)
+    const r = await axios.get(`${API_URL}/dashboard`)
+    const nuevoSnapResumen = snapshotDe(r.data.resumen)
+    const nuevoSnapVentas = snapshotDe(r.data.ventas)
+    const nuevoSnapAsignaciones = snapshotDe(r.data.asignaciones)
     if (nuevoSnapResumen !== snapshotResumen || nuevoSnapVentas !== snapshotVentas) {
       hayCambios.value = true
+    }
+    if (nuevoSnapAsignaciones !== snapshotAsignaciones) {
+      hayCambiosAsig.value = true
     }
   } catch (e) {
     console.error('Error comprobando cambios:', e)
@@ -191,21 +204,28 @@ async function cargarDatos() {
   try {
     await axios.get(`${API_URL}/init-db`)
 
-    const resVendedores = await axios.get(`${API_URL}/vendedores`)
+    const [rDashboard, resVendedores, rAlmacen] = await Promise.all([
+      axios.get(`${API_URL}/dashboard`),
+      axios.get(`${API_URL}/vendedores`),
+      axios.get(`${API_URL}/almacen`)
+    ])
+    resumen.value = rDashboard.data.resumen
+    ventas.value = rDashboard.data.ventas
+    asignaciones.value = rDashboard.data.asignaciones
     vendedores.value = resVendedores.data.vendedores
+    almacen.value = rAlmacen.data.productos || []
+    totalesAlmacen.value = rAlmacen.data.totales || { productos: 0, unidades: 0, valor: 0 }
 
-    await cargarVentas()
     // Seleccionar primer vendedor por defecto en ventas
     const uniqueVendedores = [...new Set(ventas.value.map(v => v.vendedor))]
     if (uniqueVendedores.length > 0) {
       vendedorSeleccionado.value = uniqueVendedores[0]
     }
-    await cargarResumen()
-    await cargarAsignaciones()
-    await cargarAlmacen()
     snapshotResumen = snapshotDe(resumen.value)
     snapshotVentas = snapshotDe(ventas.value)
+    snapshotAsignaciones = snapshotDe(asignaciones.value)
     hayCambios.value = false
+    hayCambiosAsig.value = false
   } catch (e) {
     error.value = 'Error al cargar datos: ' + (e.message || e)
     console.error(e)
@@ -314,6 +334,7 @@ const resumenPorVendedor = computed(() => {
       producto_nombre: item.producto_nombre,
       asignado: item.asignado,
       en_proceso: item.en_proceso,
+      cobrado: item.cobrado,
       completada: item.completada,
       pendiente: item.pendiente,
       vendido: vendidoMap[`${item.vendedor}|${item.good_id}`] || 0
@@ -356,17 +377,20 @@ const ventasPorVendedor = computed(() => {
 const totalesGenerales = computed(() => {
   let totalAsignado = 0
   let totalEnProceso = 0
+  let totalCobrado = 0
   let totalCompletada = 0
   let totalPendiente = 0
   for (const item of resumen.value) {
     totalAsignado += item.asignado
     totalEnProceso += item.en_proceso
+    totalCobrado += item.cobrado || 0
     totalCompletada += item.completada
     totalPendiente += item.pendiente || 0
   }
   return {
     asignado: totalAsignado,
     en_proceso: totalEnProceso,
+    cobrado: totalCobrado,
     completada: totalCompletada,
     pendiente: totalPendiente
   }
@@ -633,7 +657,7 @@ function esFilaExpandida(vendedor, producto_id) {
               </div>
               <div class="form-group calendar-group">
                 <label>Fecha</label>
-                <div class="calendar-input-wrapper" @click="showCalendar = !showCalendar">
+                <div class="calendar-input-wrapper" @click="abrirCalAsignacion">
                   <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ nuevaAsignacion.fecha }}</span>
                 </div>
                 <div v-if="showCalendar" class="calendar-popup" @click.stop>
@@ -725,6 +749,7 @@ function esFilaExpandida(vendedor, producto_id) {
           >
             <AppIcon name="edit" :size="14" /> Mis Asignaciones
             <span class="tab-badge">{{ asignaciones.length }}</span>
+            <span v-if="hayCambiosAsig" class="tab-badge-dot" title="Hay cambios en las asignaciones — clic para actualizar"></span>
           </button>
         </div>
 
@@ -742,6 +767,7 @@ function esFilaExpandida(vendedor, producto_id) {
                     <th>Producto</th>
                     <th class="text-right">Asig.</th>
                     <th class="text-right" title="Tiene pedido pero no ha pagado">En Proc.</th>
+                    <th class="text-right" title="Ya pagó, falta despacharlo">Cobr.</th>
                     <th class="text-right">Compl.</th>
                     <th class="text-right" title="Asignado menos lo vendido: esta cantidad podría no pagarse">Pend.</th>
                     <th class="text-right">Vend.</th>
@@ -757,12 +783,13 @@ function esFilaExpandida(vendedor, producto_id) {
                       <td>{{ prod.producto_nombre.replace('CERVEZA ', '').replace('MALTA ', '') }}</td>
                       <td class="text-right">{{ prod.asignado }}</td>
                       <td class="text-right warning">{{ prod.en_proceso }}</td>
+                      <td class="text-right cobrado-val">{{ prod.cobrado }}</td>
                       <td class="text-right success">{{ prod.completada }}</td>
                       <td class="text-right" :class="{ danger: prod.pendiente < 0 }">{{ prod.pendiente }}</td>
                       <td class="text-right">{{ prod.vendido }}</td>
                     </tr>
                     <tr v-if="esFilaExpandida(item.vendedor, prod.producto_id)">
-                      <td colspan="6" class="detalle-container">
+                      <td colspan="7" class="detalle-container">
                         <div v-if="loadingDetalle" class="detalle-loading">Cargando...</div>
                         <div v-else-if="pedidosParaFila(item.vendedor, prod.producto_id).length === 0" class="detalle-empty">
                           No hay pedidos en proceso
@@ -776,6 +803,7 @@ function esFilaExpandida(vendedor, producto_id) {
                                 <th>Fecha</th>
                                 <th>Cliente</th>
                                 <th class="text-right">Packs</th>
+                                <th>Estado</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -784,6 +812,10 @@ function esFilaExpandida(vendedor, producto_id) {
                                 <td>{{ ped.fecha ? ped.fecha.split('T')[0] : '-' }}</td>
                                 <td>{{ ped.cliente_nombre || '-' }}</td>
                                 <td class="text-right packs-val">{{ ped.packs }}</td>
+                                <td>
+                                  <AppIcon v-if="ped.cobrado" name="check" :size="18" class="estado-ico estado-ico-cobrado" />
+                                  <AppIcon v-else name="hourglass" :size="18" class="estado-ico estado-ico-proceso" />
+                                </td>
                               </tr>
                             </tbody>
                           </table>
@@ -1549,6 +1581,11 @@ body {
   color: var(--warning);
 }
 
+.cobrado-val {
+  color: #0891b2;
+  font-weight: 600;
+}
+
 .danger {
   color: var(--danger);
   font-weight: 600;
@@ -1938,6 +1975,24 @@ body {
   font-size: 11px;
   padding: 2px 7px;
   border-radius: 10px;
+  margin-left: 6px;
+  font-weight: 600;
+}
+
+.tab-badge-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  margin-left: 6px;
+  vertical-align: middle;
+  animation: pulse-dot 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
 }
 
 /* Vendedor Tabs */
@@ -2141,5 +2196,18 @@ body {
 .detalle-table .packs-val {
   font-weight: 700;
   color: var(--warning);
+}
+
+.estado-ico {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.estado-ico-cobrado {
+  color: #0891b2;
+}
+
+.estado-ico-proceso {
+  color: #d97706;
 }
 </style>

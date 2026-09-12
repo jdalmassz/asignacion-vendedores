@@ -1,10 +1,12 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import mysql from 'mysql2/promise';
 import fs from 'fs';
 
 const app = express();
 app.use(cors());
+app.use(compression());
 app.use(express.json());
 
 const ASIGNACIONES_FILE = 'asignaciones.json';
@@ -29,8 +31,34 @@ const dbConfig = {
   charset: 'utf8mb4'
 };
 
-function getConnection() {
-  return mysql.createConnection(dbConfig);
+// Pool de conexiones: se reutilizan en vez de abrir/cerrar una por request.
+const pool = mysql.createPool({
+  ...dbConfig,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// Caché en memoria con TTL. cachea la promesa para evitar "thundering herd"
+// (varias requests concurrentes comparten el mismo fetch).
+const cache = new Map();
+
+function cached(key, ttlMs, fn) {
+  const now = Date.now();
+  const hit = cache.get(key);
+  if (hit && now - hit.ts < ttlMs) return hit.promise;
+  const promise = Promise.resolve().then(fn).catch(err => {
+    cache.delete(key);
+    throw err;
+  });
+  cache.set(key, { ts: now, promise });
+  return promise;
+}
+
+function invalidate(prefix) {
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
 }
 
 function loadAsignaciones() {
@@ -43,6 +71,24 @@ function loadAsignaciones() {
 
 function saveAsignaciones(data) {
   fs.writeFileSync(ASIGNACIONES_FILE, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+const COBROS_FILE = 'cobros.json';
+
+function loadCobros() {
+  if (fs.existsSync(COBROS_FILE)) {
+    const data = fs.readFileSync(COBROS_FILE, 'utf-8');
+    return JSON.parse(data);
+  }
+  return [];
+}
+
+function saveCobros(data) {
+  fs.writeFileSync(COBROS_FILE, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+function cobrosManualesSet() {
+  return new Set(loadCobros().map(c => String(c.folio || '').toUpperCase()));
 }
 
 function normalizeVendedorName(note) {
@@ -71,41 +117,55 @@ function normProdTokens(s) {
     .filter(t => t.length > 1 && !/^(CERVEZA|MALTA|BOTELLA|BLISTER|REGIO|GUAJIRA)$/.test(t));
 }
 
-async function loadGoods() {
-  const conn = await getConnection();
-  const [rows] = await conn.query(`SELECT ID, Code, Name FROM goods WHERE Deleted = 0`);
-  await conn.end();
-  return rows;
-}
-
-function findGoodIDForAsign(a, goods) {
-  const pid = String(a.producto_id || '').trim();
-  const byCode = goods.find(g => String(g.Code || '').trim() === pid);
-  if (byCode) return byCode.ID;
-
-  const aTokens = normProdTokens(a.producto_nombre + ' ' + a.producto_id);
-  let best = null, bestScore = 0;
-  for (const g of goods) {
-    const gTokens = new Set(normProdTokens(g.Name));
-    let score = 0;
-    for (const t of aTokens) if (gTokens.has(t)) score++;
-    if (score > bestScore) { bestScore = score; best = g.ID; }
-  }
-  return bestScore >= 2 ? best : null;
-}
-
 function canonCode(g) {
   return String(g.Code || '').trim() || String(g.ID);
 }
 
-function goodIdFromItem(it, goods) {
+// Índice de productos para búsquedas O(1) en vez de recorrer el array por cada ítem.
+function makeGoodsIndex(goods) {
+  const byCanon = new Map();
+  const byRawCode = new Map();
+  const byId = new Map();
+  const tokensList = [];
+  for (const g of goods) {
+    byId.set(g.ID, g);
+    byCanon.set(canonCode(g).toUpperCase(), g);
+    if (g.Code) byRawCode.set(String(g.Code).trim(), g);
+    tokensList.push({ id: g.ID, tokens: new Set(normProdTokens(g.Name)) });
+  }
+  return { byCanon, byRawCode, byId, tokensList };
+}
+
+async function loadGoodsIndex() {
+  return cached('goodsIndex', 5 * 60 * 1000, async () => {
+    const [rows] = await pool.query(`SELECT ID, Code, Name FROM goods WHERE Deleted = 0`);
+    return makeGoodsIndex(rows);
+  });
+}
+
+function findGoodIDForAsign(a, index) {
+  const pid = String(a.producto_id || '').trim();
+  const byCode = index.byRawCode.get(pid);
+  if (byCode) return byCode.ID;
+
+  const aTokens = normProdTokens(a.producto_nombre + ' ' + a.producto_id);
+  let best = null, bestScore = 0;
+  for (const g of index.tokensList) {
+    let score = 0;
+    for (const t of aTokens) if (g.tokens.has(t)) score++;
+    if (score > bestScore) { bestScore = score; best = g.id; }
+  }
+  return bestScore >= 2 ? best : null;
+}
+
+function goodIdFromItem(it, index) {
   if (!it) return null;
   const c = String(it.codigo || '').trim().toUpperCase();
   if (c) {
-    const byCode = goods.find(g => canonCode(g).toUpperCase() === c);
+    const byCode = index.byCanon.get(c);
     if (byCode) return byCode.ID;
   }
-  return findGoodIDForAsign({ producto_id: it.codigo || '', producto_nombre: it.producto || it.codigo || '' }, goods) || null;
+  return findGoodIDForAsign({ producto_id: it.codigo || '', producto_nombre: it.producto || it.codigo || '' }, index) || null;
 }
 
 async function apiGet(path) {
@@ -121,6 +181,10 @@ async function apiGet(path) {
 }
 
 async function fetchAllOrders(desde, hasta) {
+  return cached(`orders:${desde}:${hasta}`, 60 * 1000, () => fetchAllOrdersUncached(desde, hasta));
+}
+
+async function fetchAllOrdersUncached(desde, hasta) {
   const allOrders = [];
   let page = 1;
   const limit = 1000;
@@ -220,12 +284,16 @@ app.get('/api/productos', async (req, res) => {
   }
 });
 
-// GET /api/asignaciones
-app.get('/api/asignaciones', (req, res) => {
+function getAsignaciones() {
   const asignaciones = loadAsignaciones();
   const filtered = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
   filtered.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
-  res.json({ asignaciones: filtered });
+  return filtered;
+}
+
+// GET /api/asignaciones
+app.get('/api/asignaciones', (req, res) => {
+  res.json({ asignaciones: getAsignaciones() });
 });
 
 // POST /api/asignaciones
@@ -259,10 +327,9 @@ app.delete('/api/asignaciones/:id', (req, res) => {
 });
 
 // GET /api/ventas — desde MariaDB (operaciones despachadas Sign=-1)
-app.get('/api/ventas', async (req, res) => {
-  try {
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
+async function computeVentas() {
+  return cached('ventas', 60 * 1000, async () => {
+    const [rows] = await pool.query(`
       SELECT o.Note, o.GoodID, o.Date, o.PartnerID, g.Name, g.PriceOut1, g.Measure1, g.Measure2, SUM(o.Qtty) as TotalVendido
       FROM operations o
       LEFT JOIN goods g ON o.GoodID = g.ID
@@ -270,7 +337,6 @@ app.get('/api/ventas', async (req, res) => {
       AND o.Sign = -1 AND Note LIKE '%V-%'
       GROUP BY o.Note, o.GoodID, o.Date, o.PartnerID, g.Name, g.PriceOut1, g.Measure1, g.Measure2
     `);
-    await conn.end();
 
     const ventas = [];
     for (const row of rows) {
@@ -290,49 +356,27 @@ app.get('/api/ventas', async (req, res) => {
         cliente: row.PartnerID || 0
       });
     }
-    res.json({ ventas });
+    return ventas;
+  });
+}
+
+app.get('/api/ventas', async (req, res) => {
+  try {
+    res.json({ ventas: await computeVentas() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/resumen — asignaciones vs despachos reales (MariaDB) + pedidos en proceso (API)
-app.get('/api/resumen', async (req, res) => {
-  try {
-    const asignaciones = loadAsignaciones();
-    const asignSep = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
-
-    // Group assignments by vendedor + producto (mapear a GoodID real)
-    const goods = await loadGoods();
-    const asignMap = {};
-    const asignInfo = {};
-    for (const a of asignSep) {
-      const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
-      const goodId = findGoodIDForAsign(a, goods);
-      if (!goodId) continue;
-      const g = goods.find(gg => gg.ID === goodId);
-      const key = `${vendedorNorm}|${goodId}`;
-      if (!asignMap[key]) {
-        asignMap[key] = 0;
-        asignInfo[key] = {
-          vendedor: vendedorNorm,
-          goodId,
-          producto_id: g ? canonCode(g) : String(a.producto_id || a.producto_nombre || goodId),
-          producto_nombre: g ? g.Name : a.producto_nombre
-        };
-      }
-      asignMap[key] += a.cantidad;
-    }
-
-    // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
+// Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID (cacheado)
+async function loadDespachos() {
+  return cached('despachos', 60 * 1000, async () => {
+    const [rows] = await pool.query(`
       SELECT o.Note, o.GoodID, o.Qtty
       FROM operations o
       WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
       AND o.Sign = -1 AND Note LIKE '%V-%'
     `);
-    await conn.end();
 
     const despachosMap = {};   // vendedor|GoodID -> packs despachados
     const foliosDespachados = new Set();
@@ -343,53 +387,99 @@ app.get('/api/resumen', async (req, res) => {
       if (m) foliosDespachados.add(m[1].toUpperCase());
       despachosMap[`${vendedor}|${row.GoodID}`] = (despachosMap[`${vendedor}|${row.GoodID}`] || 0) + (row.Qtty || 0);
     }
+    return { despachosMap, foliosDespachados };
+  });
+}
 
-    // Pedidos del API: solo en_proceso que aún NO se despacharon (evitar doble conteo)
-    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
-    const procesoMap = {};
-    for (const o of orders) {
-      if (o.estado !== 'en_proceso') continue;
-      if (!o.folio) continue;
-      if (foliosDespachados.has(o.folio.toUpperCase())) continue;
-      const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
-      if (!vendedor) continue;
-      for (const it of (o.items || [])) {
-        const goodId = goodIdFromItem(it, goods);
-        if (!goodId) continue;
-        const key = `${vendedor}|${goodId}`;
-        if (!asignInfo[key]) continue;
-        procesoMap[key] = (procesoMap[key] || 0) + (it.packs || 0);
-      }
-    }
+async function computeResumen() {
+  const asignaciones = loadAsignaciones();
+  const asignSep = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
 
-    // Build resumen: completada = despachos reales (topeado al asignado), en_proceso del API
-    const resumen = [];
-    for (const key in asignMap) {
-      const info = asignInfo[key];
-      const completada = Math.min(despachosMap[`${info.vendedor}|${info.goodId}`] || 0, asignMap[key]);
-      const enProceso = procesoMap[key] || 0;
-      resumen.push({
-        vendedor: info.vendedor,
-        producto_id: info.producto_id,
-        good_id: info.goodId,
-        producto_nombre: info.producto_nombre,
-        asignado: asignMap[key],
-        en_proceso: enProceso,
-        completada,
-        pendiente: Math.max(0, asignMap[key] - completada)
-      });
+  // Group assignments by vendedor + producto (mapear a GoodID real)
+  const goodsIndex = await loadGoodsIndex();
+  const asignMap = {};
+  const asignInfo = {};
+  for (const a of asignSep) {
+    const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
+    const goodId = findGoodIDForAsign(a, goodsIndex);
+    if (!goodId) continue;
+    const g = goodsIndex.byId.get(goodId);
+    const key = `${vendedorNorm}|${goodId}`;
+    if (!asignMap[key]) {
+      asignMap[key] = 0;
+      asignInfo[key] = {
+        vendedor: vendedorNorm,
+        goodId,
+        producto_id: g ? canonCode(g) : String(a.producto_id || a.producto_nombre || goodId),
+        producto_nombre: g ? g.Name : a.producto_nombre
+      };
     }
-    res.json({ resumen });
+    asignMap[key] += a.cantidad;
+  }
+
+  // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
+  const { despachosMap, foliosDespachados } = await loadDespachos();
+
+  // Pedidos del API: solo en_proceso que aún NO se despacharon (evitar doble conteo)
+  // Los que ya están cobrados (pedido_cobrado=completo o marcado manual) van a "cobrado",
+  // no a "en_proceso" (que queda solo para los que de verdad no han pagado).
+  const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+  const cobrosManuales = cobrosManualesSet();
+  const procesoMap = {};
+  const cobradoMap = {};
+  for (const o of orders) {
+    if (o.estado !== 'en_proceso') continue;
+    if (!o.folio) continue;
+    if (foliosDespachados.has(o.folio.toUpperCase())) continue;
+    const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
+    if (!vendedor) continue;
+    const esCobrado = o.pedido_cobrado === 'completo' || cobrosManuales.has(o.folio.toUpperCase());
+    for (const it of (o.items || [])) {
+      const goodId = goodIdFromItem(it, goodsIndex);
+      if (!goodId) continue;
+      const key = `${vendedor}|${goodId}`;
+      if (!asignInfo[key]) continue;
+      const target = esCobrado ? cobradoMap : procesoMap;
+      target[key] = (target[key] || 0) + (it.packs || 0);
+    }
+  }
+
+  // Build resumen: completada = despachos reales (topeado al asignado),
+  // cobrado = pagado pendiente de despacho, en_proceso = el resto sin pagar
+  const resumen = [];
+  for (const key in asignMap) {
+    const info = asignInfo[key];
+    const completada = Math.min(despachosMap[`${info.vendedor}|${info.goodId}`] || 0, asignMap[key]);
+    const cobrado = cobradoMap[key] || 0;
+    const enProceso = procesoMap[key] || 0;
+    resumen.push({
+      vendedor: info.vendedor,
+      producto_id: info.producto_id,
+      good_id: info.goodId,
+      producto_nombre: info.producto_nombre,
+      asignado: asignMap[key],
+      en_proceso: enProceso,
+      cobrado,
+      completada,
+      pendiente: Math.max(0, asignMap[key] - completada - cobrado)
+    });
+  }
+  return resumen;
+}
+
+// GET /api/resumen — asignaciones vs despachos reales (MariaDB) + pedidos en proceso (API)
+app.get('/api/resumen', async (req, res) => {
+  try {
+    res.json({ resumen: await computeResumen() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET /api/almacen — desde MariaDB (store, inventario real)
-app.get('/api/almacen', async (req, res) => {
-  try {
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
+async function computeAlmacen() {
+  return cached('almacen', 60 * 1000, async () => {
+    const [rows] = await pool.query(`
       SELECT o.ID AS object_id, o.Name AS almacen, g.ID, g.Code, g.Name, g.PriceOut1, SUM(s.Qtty) AS stock
       FROM store s
       LEFT JOIN goods g ON s.GoodID = g.ID
@@ -399,7 +489,6 @@ app.get('/api/almacen', async (req, res) => {
       GROUP BY o.ID, o.Name, g.ID, g.Code, g.Name, g.PriceOut1
       HAVING stock > 0
     `);
-    await conn.end();
     const almacenes = {};
     for (const r of rows) {
       if (!r.Name || !r.ID) continue;
@@ -423,7 +512,13 @@ app.get('/api/almacen', async (req, res) => {
       unidades: lista.reduce((s, a) => s + a.total_unidades, 0),
       valor: lista.reduce((s, a) => s + a.total_valor, 0)
     };
-    res.json({ productos: lista, totales });
+    return { productos: lista, totales };
+  });
+}
+
+app.get('/api/almacen', async (req, res) => {
+  try {
+    res.json(await computeAlmacen());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -440,51 +535,61 @@ app.get('/api/clientes-por-vendedor', async (req, res) => {
 });
 
 // GET /api/detalle-proceso — detalle de pedidos en_proceso por vendedor+producto
+async function computeDetalleProceso() {
+  const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
+  const goodsIndex = await loadGoodsIndex();
+
+  // Despachos reales para saber qué folios ya se despacharon
+  const { foliosDespachados } = await loadDespachos();
+
+  const result = {};
+  const cobrosManuales = cobrosManualesSet();
+  for (const o of orders) {
+    if (o.estado !== 'en_proceso') continue;
+    if (!o.folio) continue;
+    if (foliosDespachados.has(o.folio.toUpperCase())) continue;
+    const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
+    if (!vendedor) continue;
+    const pedidoCobrado = o.pedido_cobrado === 'completo' || cobrosManuales.has(o.folio.toUpperCase());
+    for (const it of (o.items || [])) {
+      const goodId = goodIdFromItem(it, goodsIndex);
+      if (!goodId) continue;
+      const g = goodsIndex.byId.get(goodId);
+      const producto_id = g ? canonCode(g) : String(it.codigo || it.producto || goodId);
+      const key = `${vendedor}|${producto_id}`;
+      if (!result[key]) {
+        result[key] = { vendedor, producto_id, pedidos: [] };
+      }
+      result[key].pedidos.push({
+        folio: o.folio,
+        producto_codigo: it.codigo,
+        packs: it.packs || 0,
+        fecha: o.fecha || null,
+        cliente_nombre: o.cliente?.nombre || null,
+        cobrado: pedidoCobrado
+      });
+    }
+  }
+  return Object.values(result);
+}
+
 app.get('/api/detalle-proceso', async (req, res) => {
   try {
-    const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
-    const goods = await loadGoods();
+    res.json({ detalle: await computeDetalleProceso() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    // Despachos reales para saber qué folios ya se despacharon
-    const conn = await getConnection();
-    const [rows] = await conn.query(`
-      SELECT o.Note FROM operations o
-      WHERE o.Date >= '2026-09-01' AND o.Date < '2026-10-01'
-      AND o.Sign = -1 AND Note LIKE '%V-%'
-    `);
-    await conn.end();
-    const foliosDespachados = new Set();
-    for (const row of rows) {
-      const m = row.Note.match(/(?:^|;)P-([A-Z0-9\-]+);/i);
-      if (m) foliosDespachados.add(m[1].toUpperCase());
-    }
-
-    const result = {};
-    for (const o of orders) {
-      if (o.estado !== 'en_proceso') continue;
-      if (!o.folio) continue;
-      if (foliosDespachados.has(o.folio.toUpperCase())) continue;
-      const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
-      if (!vendedor) continue;
-      for (const it of (o.items || [])) {
-        const goodId = goodIdFromItem(it, goods);
-        if (!goodId) continue;
-        const g = goods.find(gg => gg.ID === goodId);
-        const producto_id = g ? canonCode(g) : String(it.codigo || it.producto || goodId);
-        const key = `${vendedor}|${producto_id}`;
-        if (!result[key]) {
-          result[key] = { vendedor, producto_id, pedidos: [] };
-        }
-        result[key].pedidos.push({
-          folio: o.folio,
-          producto_codigo: it.codigo,
-          packs: it.packs || 0,
-          fecha: o.fecha || null,
-          cliente_nombre: o.cliente?.nombre || null
-        });
-      }
-    }
-    res.json({ detalle: Object.values(result) });
+// GET /api/dashboard — resumen + ventas + asignaciones en UNA sola request
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const [resumen, ventas, asignaciones] = await Promise.all([
+      computeResumen(),
+      computeVentas(),
+      Promise.resolve(getAsignaciones())
+    ]);
+    res.json({ resumen, ventas, asignaciones });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -493,6 +598,32 @@ app.get('/api/detalle-proceso', async (req, res) => {
 // GET /api/init-db
 app.get('/api/init-db', (req, res) => {
   res.json({ success: true, message: 'OK' });
+});
+
+// POST /api/cobros — marca un pedido como cobrado manualmente
+app.post('/api/cobros', (req, res) => {
+  const { folio } = req.body;
+  if (!folio) return res.status(400).json({ success: false, error: 'folio requerido' });
+  const f = String(folio).toUpperCase();
+  const cobros = loadCobros();
+  if (!cobros.some(c => String(c.folio).toUpperCase() === f)) {
+    cobros.push({ folio: f, fecha: new Date().toISOString().split('T')[0] });
+    saveCobros(cobros);
+  }
+  res.json({ success: true });
+});
+
+// DELETE /api/cobros/:folio — desmarca un pedido manualmente marcado
+app.delete('/api/cobros/:folio', (req, res) => {
+  const f = String(req.params.folio || '').toUpperCase();
+  let cobros = loadCobros();
+  const originalLen = cobros.length;
+  cobros = cobros.filter(c => String(c.folio).toUpperCase() !== f);
+  if (cobros.length === originalLen) {
+    return res.status(404).json({ success: false, error: 'No encontrado' });
+  }
+  saveCobros(cobros);
+  res.json({ success: true });
 });
 
 const PORT = process.env.PORT || 4000;

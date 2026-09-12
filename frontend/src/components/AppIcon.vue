@@ -83,6 +83,11 @@
       <polyline points="17 21 17 13 7 13 7 21"></polyline>
       <polyline points="7 3 7 8 15 8"></polyline>
     </template>
+    <template v-else-if="name === 'cash'">
+      <rect x="2" y="6" width="20" height="12" rx="2"></rect>
+      <circle cx="12" cy="12" r="2"></circle>
+      <path d="M6 12h.01M18 12h.01"></path>
+    </template>
     <template v-else-if="name === 'users'">
       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
       <circle cx="9" cy="7" r="4"></circle>
