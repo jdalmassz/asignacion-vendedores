@@ -166,3 +166,55 @@ export function escuchar(req, res) {
 export function cuantosEscuchan() {
   return oyentes.size;
 }
+
+/**
+ * La caché compartida.
+ *
+ * Vive aquí porque aquí está la conexión. Sin Redis devuelve `null` y quien llama se
+ * queda con su espejo en memoria: la caché sigue funcionando, sólo que no sobrevive al
+ * despliegue ni la comparten dos copias.
+ *
+ * Nada de esto lanza nunca. Un fallo guardando o leyendo la caché tiene que costar una
+ * consulta de más, no una pantalla rota.
+ */
+const VIDA_CACHE_S = 24 * 60 * 60;
+
+export async function leerCache(clave) {
+  if (!publicador?.isOpen) return null;
+
+  try {
+    const crudo = await publicador.get(clave);
+
+    return crudo ? JSON.parse(crudo) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function guardarCache(clave, valor) {
+  if (!publicador?.isOpen) return;
+
+  try {
+    /*
+     * Un día de vida, muy por encima del TTL de uso.
+     *
+     * El TTL de verdad lo decide quien lee —a los 60 segundos lo da por viejo y refresca
+     * por detrás—. Esto es sólo para que una clave que deje de usarse no se quede en
+     * Redis para siempre. Si caducara en 60 s no habría nada que servir en frío, que es
+     * justo lo que se quiere evitar.
+     */
+    await publicador.set(clave, JSON.stringify(valor), { EX: VIDA_CACHE_S });
+  } catch {
+    // El dato ya está en el espejo de memoria; perder el compartido no rompe nada.
+  }
+}
+
+export async function borrarCache(clave) {
+  if (!publicador?.isOpen) return;
+
+  try {
+    await publicador.del(clave);
+  } catch {
+    // Si no se puede borrar, el TTL se encarga.
+  }
+}
