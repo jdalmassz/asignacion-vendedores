@@ -508,6 +508,7 @@ const resumenPorVendedor = computed(() => {
       en_proceso: item.en_proceso,
       // De lo despachado, lo que se facturó distinto de lo que se pidió.
       cambiado: item.cambiado ?? 0,
+      sin_pedido: item.sin_pedido ?? 0,
       exceso: item.exceso ?? 0,
       completada: item.completada,
       pendiente: item.pendiente,
@@ -538,7 +539,7 @@ function inicialesDe(nombre) {
 
 /** Lo de un vendedor, sumado, para poder comparar vendedores sin leer sus filas. */
 function totalesDe(item) {
-  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0 }
+  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0, sin_pedido: 0 }
   for (const p of item.productos) {
     for (const k in t) t[k] += p[k] || 0
   }
@@ -1224,7 +1225,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                       title="Salió, pero la factura no coincidía con lo que se pidió"
                     >Facturó y cambió <b>{{ prod.cambiado }}</b></span>
                     <span v-if="prod.en_proceso" class="marca m-proceso">En proceso <b>{{ prod.en_proceso }}</b></span>
-                    <span v-if="tramosDe(prod).sinTocar" class="marca m-libre">Sin pedido <b>{{ tramosDe(prod).sinTocar }}</b></span>
+                    <span
+                      v-if="tramosDe(prod).sinTocar"
+                      class="marca m-libre"
+                      title="Asignado que todavía nadie ha pedido"
+                    >Sin pedir <b>{{ tramosDe(prod).sinTocar }}</b></span>
+                    <span
+                      v-if="prod.sin_pedido"
+                      class="marca m-sinpedido"
+                      title="Salió del almacén sin ningún pedido detrás: Ventra lo facturó y PEDIDO no tiene ese folio, o la factura salió sin folio en la nota"
+                    >Salió sin pedido <b>{{ prod.sin_pedido }}</b></span>
                     <span
                       v-if="tramosDe(prod).exceso"
                       class="marca m-demas"
@@ -1253,6 +1263,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
                   <b>{{ totalesDe(item).exceso }}</b> de más
+                </span>
+                <span v-if="totalesDe(item).sin_pedido" class="pie-sinpedido">
+                  <b>{{ totalesDe(item).sin_pedido }}</b> sin pedido
                 </span>
                 <span v-if="totalesDe(item).cambiado" class="pie-cambiado">
                   <b>{{ totalesDe(item).cambiado }}</b> cambiados
@@ -3421,6 +3434,7 @@ body {
 .m-cambiado   { color: var(--purple); }
 .m-proceso    { color: var(--warning); }
 .m-libre      { color: var(--text-light); }
+.m-sinpedido  { color: #b45309; }
 .m-demas      { color: var(--danger); }
 .m-aviso      { color: #b45309; }
 
