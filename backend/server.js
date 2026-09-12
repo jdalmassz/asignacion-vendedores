@@ -551,13 +551,28 @@ async function computeResumen() {
     }
   }
 
-  // completada = despachos reales de Ventra (topeado al asignado)
-  // facturado  = tiene factura pero todavía no ha salido del almacén
-  // en_proceso = ni facturado ni despachado
+  /*
+   * `completada` YA NO SE TOPA al asignado.
+   *
+   * Estaba escrito `Math.min(despachado, asignado)`, así que despachar de más era
+   * invisible: MAYLEN REMON DIAZ sacó 202 de VODKA REGIO contra 180 asignados y la
+   * pantalla ponía 180, sin rastro de los 22 de diferencia. Y no era un caso suelto:
+   * pasaba en 4 de las 14 filas del mes y escondía 127 unidades —GEORLIS 982 contra
+   * 912, ANDY 933, ERNESTO 926—.
+   *
+   * Pasarse de lo asignado es justo lo que hay que ver, no lo que hay que recortar.
+   * Ahora va el número real y aparte `exceso`, que es cuánto se pasó.
+   *
+   * `pendiente` sí sigue mirando lo que cabe dentro de lo asignado: lo que falta por
+   * despachar no puede ser negativo porque alguien haya sacado de más.
+   */
   const resumen = [];
   for (const key in asignMap) {
     const info = asignInfo[key];
-    const completada = Math.min(despachosMap[`${info.vendedor}|${info.goodId}`] || 0, asignMap[key]);
+    const asignado = asignMap[key];
+    const despachado = despachosMap[`${info.vendedor}|${info.goodId}`] || 0;
+    const completada = despachado;
+    const dentroDeLoAsignado = Math.min(despachado, asignado);
     const facturado = facturadoMap[key] || 0;
     const enProceso = procesoMap[key] || 0;
     resumen.push({
@@ -565,9 +580,11 @@ async function computeResumen() {
       producto_id: info.producto_id,
       good_id: info.goodId,
       producto_nombre: info.producto_nombre,
-      asignado: asignMap[key],
+      asignado,
       en_proceso: enProceso,
       facturado,
+      /** Cuánto se pasó de lo asignado. 0 cuando no se pasó. */
+      exceso: Math.max(0, despachado - asignado),
       /**
        * Se sigue mandando `cobrado` con el mismo valor que `facturado`.
        *
@@ -577,7 +594,7 @@ async function computeResumen() {
        */
       cobrado: facturado,
       completada,
-      pendiente: Math.max(0, asignMap[key] - completada - facturado)
+      pendiente: Math.max(0, asignado - dentroDeLoAsignado - facturado)
     });
   }
   return resumen;

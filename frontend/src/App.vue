@@ -508,6 +508,7 @@ const resumenPorVendedor = computed(() => {
       en_proceso: item.en_proceso,
       // El servidor manda los dos con el mismo valor mientras se retira el viejo.
       facturado: item.facturado ?? item.cobrado ?? 0,
+      exceso: item.exceso ?? 0,
       completada: item.completada,
       pendiente: item.pendiente,
       vendido: vendidoMap[`${item.vendedor}|${item.good_id}`] || 0
@@ -537,7 +538,7 @@ function inicialesDe(nombre) {
 
 /** Lo de un vendedor, sumado, para poder comparar vendedores sin leer sus filas. */
 function totalesDe(item) {
-  const t = { asignado: 0, en_proceso: 0, facturado: 0, completada: 0, vendido: 0 }
+  const t = { asignado: 0, en_proceso: 0, facturado: 0, completada: 0, vendido: 0, exceso: 0 }
   for (const p of item.productos) {
     for (const k in t) t[k] += p[k] || 0
   }
@@ -558,19 +559,39 @@ function totalesDe(item) {
  */
 function tramosDe(p) {
   const asignado = p.asignado || 0
-  const completada = p.completada || 0
+  const despachado = p.completada || 0
   const facturado = p.facturado || 0
   const proceso = p.en_proceso || 0
-  const ocupado = completada + facturado + proceso
-  const base = Math.max(asignado, ocupado, 1)
+
+  /*
+   * DOS excesos distintos, que antes iban en el mismo número y con la etiqueta
+   * equivocada.
+   *
+   * `deMas` era `despachado + facturado + en proceso - asignado` y el rótulo decía
+   * "Salió más de lo que se le asignó". A MAYLEN le ponía "De más 35" cuando lo que
+   * había salido eran 180 de 180 clavados: esos 35 eran pedidos SIN despachar. Lo que
+   * de verdad se pasó eran 22, y no se veía por ningún lado.
+   *
+   *   salioDeMas    lo que YA salió por encima de lo asignado. Es un hecho.
+   *   pedidoDeMas   lo que se pasaría SI sale todo lo que está pedido. Es un aviso.
+   */
+  const salioDeMas = Math.max(0, despachado - asignado)
+  const dentro = Math.min(despachado, asignado)
+  const comprometido = dentro + facturado + proceso
+  const pedidoDeMas = Math.max(0, comprometido - asignado)
+
+  const base = Math.max(asignado + salioDeMas, comprometido, 1)
   const parte = (n) => `${(n / base) * 100}%`
+
   return {
-    despachado: parte(completada),
+    despachado: parte(dentro),
+    salioDeMas: parte(salioDeMas),
     facturado: parte(facturado),
     proceso: parte(proceso),
-    libre: parte(Math.max(0, asignado - ocupado)),
-    sinTocar: Math.max(0, asignado - ocupado),
-    deMas: Math.max(0, ocupado - asignado)
+    libre: parte(Math.max(0, asignado - comprometido)),
+    sinTocar: Math.max(0, asignado - comprometido),
+    exceso: salioDeMas,
+    comprometidoDeMas: pedidoDeMas
   }
 }
 
@@ -578,7 +599,8 @@ function tramosDe(p) {
 function avanceDe(item) {
   const t = totalesDe(item)
   if (!t.asignado) return 0
-  return Math.min(100, Math.round((t.completada / t.asignado) * 100))
+  // Sin tope: un 112 % dice que se despachó más de lo asignado, y eso hay que verlo.
+  return Math.round((t.completada / t.asignado) * 100)
 }
 
 /**
@@ -1184,6 +1206,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     :aria-label="`De ${prod.asignado} asignados: ${prod.completada} despachados, ${prod.facturado} facturados sin salir, ${prod.en_proceso} con pedido sin facturar`"
                   >
                     <span class="tramo t-despachado" :style="{ width: tramosDe(prod).despachado }"></span>
+                    <span class="tramo t-exceso" :style="{ width: tramosDe(prod).salioDeMas }"></span>
                     <span class="tramo t-facturado" :style="{ width: tramosDe(prod).facturado }"></span>
                     <span class="tramo t-proceso" :style="{ width: tramosDe(prod).proceso }"></span>
                     <span class="tramo t-libre" :style="{ width: tramosDe(prod).libre }"></span>
@@ -1195,10 +1218,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     <span v-if="prod.en_proceso" class="marca m-proceso">En proceso <b>{{ prod.en_proceso }}</b></span>
                     <span v-if="tramosDe(prod).sinTocar" class="marca m-libre">Sin pedido <b>{{ tramosDe(prod).sinTocar }}</b></span>
                     <span
-                      v-if="tramosDe(prod).deMas"
+                      v-if="tramosDe(prod).exceso"
                       class="marca m-demas"
-                      title="Salió más de lo que se le asignó"
-                    >De más <b>{{ tramosDe(prod).deMas }}</b></span>
+                      :title="`Ya salieron ${prod.completada} de ${prod.asignado} asignados: ${tramosDe(prod).exceso} por encima`"
+                    >Salió de más <b>{{ tramosDe(prod).exceso }}</b></span>
+                    <span
+                      v-if="tramosDe(prod).comprometidoDeMas"
+                      class="marca m-aviso"
+                      title="Lo que está pedido y todavía no ha salido se pasa de lo asignado. Todavía no ha salido: es un aviso, no un hecho."
+                    >Pedido de más <b>{{ tramosDe(prod).comprometidoDeMas }}</b></span>
                   </p>
 
                 </li>
@@ -1215,6 +1243,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               <footer class="vendedor-pie">
                 <span><b>{{ totalesDe(item).asignado }}</b> asignados</span>
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
+                <span v-if="totalesDe(item).exceso" class="pie-exceso">
+                  <b>{{ totalesDe(item).exceso }}</b> de más
+                </span>
                 <span v-if="totalesDe(item).facturado" class="pie-facturado">
                   <b>{{ totalesDe(item).facturado }}</b> facturados
                 </span>
@@ -3340,6 +3371,7 @@ body {
 .t-despachado { background: var(--success); }
 .t-facturado  { background: var(--primary); }
 .t-proceso    { background: var(--warning); }
+.t-exceso     { background: var(--danger); }
 .t-libre      { background: transparent; }
 
 /* --- Las cifras, con su nombre entero ------------------------------------ */
@@ -3382,6 +3414,7 @@ body {
 .m-proceso    { color: var(--warning); }
 .m-libre      { color: var(--text-light); }
 .m-demas      { color: var(--danger); }
+.m-aviso      { color: #b45309; }
 
 /* --- El detalle de los pedidos ------------------------------------------- */
 
