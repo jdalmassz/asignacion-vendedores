@@ -320,6 +320,8 @@ function escucharCambios() {
      * recargar a mano. Si el servidor dice que cambió, se trae y se pinta: para eso está
      * la transición, para que el cambio se vea llegar en vez de aparecer de golpe.
      */
+    void cargarEstado()
+
     if (dato.que === 'asignaciones') {
       void cargarAsignaciones()
       void cargarResumen()
@@ -334,17 +336,61 @@ function escucharCambios() {
   }
 }
 
+const cargandoAlmacen = ref(false)
+
+/** Cuándo se calculó lo que se está viendo, para poder decirlo. */
+const actualizado = ref(null)
+
+async function cargarEstado() {
+  try {
+    const r = await axios.get(`${API_URL}/eventos/estado`)
+    const fechas = Object.values(r.data?.calculado || {}).filter(Boolean)
+
+    // La más vieja de las tres: es la que manda para decir «esto es de hace…».
+    actualizado.value = fechas.length ? fechas.sort()[0] : null
+  } catch {
+    actualizado.value = null
+  }
+}
+
+/** «hace 2 minutos». Se recalcula solo porque `ahora` avanza cada 30 segundos. */
+const ahora = ref(Date.now())
+
+setInterval(() => { ahora.value = Date.now() }, 30000)
+
+const haceCuanto = computed(() => {
+  if (!actualizado.value) return null
+
+  const m = Math.round((ahora.value - new Date(actualizado.value).getTime()) / 60000)
+
+  if (m < 1) return 'ahora mismo'
+  if (m === 1) return 'hace 1 minuto'
+  if (m < 60) return `hace ${m} minutos`
+
+  const h = Math.round(m / 60)
+
+  return h === 1 ? 'hace 1 hora' : `hace ${h} horas`
+})
+
 async function cargarDatos() {
   loading.value = true
   error.value = null
   try {
     await axios.get(`${API_URL}/init-db`)
 
-    const [rDashboard, resVendedores, rAlmacen] = await Promise.all([
+    /*
+     * El almacén NO bloquea la pantalla.
+     *
+     * En frío tarda dieciséis segundos —son 90 días de ventas de Ventra por la VPN para
+     * sacar los precios, que Ventra no da en la ficha del producto—. Pidiéndolo a la vez
+     * que lo demás, la pantalla entera se quedaba esperando por una pestaña que quizá ni
+     * se abre. Ahora entra por su cuenta y aparece cuando llega.
+     */
+    const [rDashboard, resVendedores] = await Promise.all([
       axios.get(`${API_URL}/dashboard`),
-      axios.get(`${API_URL}/vendedores`),
-      axios.get(`${API_URL}/almacen`)
+      axios.get(`${API_URL}/vendedores`)
     ])
+    void cargarAlmacen()
     resumen.value = rDashboard.data?.resumen || []
     ventas.value = rDashboard.data?.ventas || []
     /*
@@ -359,8 +405,7 @@ async function cargarDatos() {
     }
     vendedores.value = resVendedores.data?.vendedores || []
     cargarMeses()
-    almacen.value = rAlmacen.data?.productos || []
-    totalesAlmacen.value = rAlmacen.data?.totales || { productos: 0, unidades: 0, valor: 0 }
+    void cargarEstado()
 
     // Seleccionar primer vendedor por defecto en ventas
     const uniqueVendedores = [...new Set(ventas.value.map(v => v.vendedor))]
@@ -432,12 +477,16 @@ async function cargarAsignaciones() {
 watch(mesElegido, cargarAsignaciones)
 
 async function cargarAlmacen() {
+  cargandoAlmacen.value = true
   try {
     const res = await axios.get(`${API_URL}/almacen`)
-    almacen.value = res.data.productos || []
-    totalesAlmacen.value = res.data.totales || { productos: 0, unidades: 0, valor: 0 }
+
+    almacen.value = res.data?.productos || []
+    totalesAlmacen.value = res.data?.totales || { productos: 0, unidades: 0, valor: 0 }
   } catch (e) {
     console.error('Error al cargar almacén:', e)
+  } finally {
+    cargandoAlmacen.value = false
   }
 }
 
@@ -941,6 +990,8 @@ async function toggleDetalle(vendedor, producto_id, producto_nombre, prod = null
   }
   filaExpandida.value = key
   detalleDe.value = { vendedor, producto_id, producto_nombre, prod }
+  // Cada producto empieza por su primera página, no por donde se quedó el anterior.
+  paginaDetalle.value = 1
   await traerDetalle()
 }
 
@@ -1003,6 +1054,33 @@ function elegirVendedor(nombre) {
   vendedorSeleccionado.value = nombre
 }
 
+/**
+ * La lista de pedidos del detalle, paginada.
+ *
+ * Un producto con muchos pedidos sin despachar hace una lista que no se acaba: ALEXANDER
+ * tenía nueve, pero con un mes cargado son decenas y la ventana se convierte en un
+ * scroll sin fondo. Diez por página, que es lo que cabe sin tener que arrastrar.
+ */
+const POR_PAGINA_DETALLE = 10
+const paginaDetalle = ref(1)
+
+const pedidosDelDetalle = computed(() =>
+  detalleDe.value ? pedidosParaFila(detalleDe.value.vendedor, detalleDe.value.producto_id) : []
+)
+
+const paginasDetalle = computed(() =>
+  Math.max(Math.ceil(pedidosDelDetalle.value.length / POR_PAGINA_DETALLE), 1)
+)
+
+/* Si se borra o cambia la lista, la página no puede quedarse fuera de rango. */
+const paginaDetalleActual = computed(() => Math.min(paginaDetalle.value, paginasDetalle.value))
+
+const pedidosVisibles = computed(() => {
+  const desde = (paginaDetalleActual.value - 1) * POR_PAGINA_DETALLE
+
+  return pedidosDelDetalle.value.slice(desde, desde + POR_PAGINA_DETALLE)
+})
+
 function cerrarDetalle() {
   filaExpandida.value = null
 }
@@ -1064,8 +1142,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             <span v-if="!showForm"><AppIcon name="plus" :size="16" /> Nueva Asignación</span>
             <span v-else><AppIcon name="x" :size="16" /> Cancelar</span>
           </button>
-          <!-- Sin chapa de «hay cambios»: ahora llegan solos. El botón se queda para
-               forzar una recarga cuando alguien quiera asegurarse. -->
+          <!--
+            Se queda el botón, y al lado CUÁNDO se actualizó.
+            La caché sirve lo guardado mientras refresca por detrás, así que lo que se ve
+            puede ser de hace un minuto. Decirlo es la diferencia entre un dato con fecha
+            y un dato que parece de ahora y no lo es.
+          -->
+          <span v-if="haceCuanto" class="actualizado" :title="`Calculado el ${actualizado}`">
+            {{ haceCuanto }}
+          </span>
           <button class="btn btn-ghost ref-btn" @click="cargarDatos" title="Actualizar datos">
             <AppIcon name="refresh" :size="16" />
           </button>
@@ -1810,15 +1895,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               <p>{{ errorDetalle }}</p>
               <button type="button" class="btn-reintentar" @click="traerDetalle(true)">Reintentar</button>
             </div>
-            <p v-else-if="pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id).length === 0" class="detalle-aviso">
+            <p v-else-if="pedidosDelDetalle.length === 0" class="detalle-aviso">
               No queda ningún pedido por despachar de este producto
             </p>
             <template v-else>
               <div class="detalle-titulo">
-                Pedidos sin despachar ({{ pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id).length }})
+                Pedidos sin despachar ({{ pedidosDelDetalle.length }})
               </div>
               <ul class="pedido-lista">
-                <li v-for="(ped, idx) in pedidosParaFila(detalleDe.vendedor, detalleDe.producto_id)" :key="idx" class="pedido">
+                <li v-for="(ped, idx) in pedidosVisibles" :key="idx" class="pedido">
                   <span class="pedido-folio">{{ ped.folio }}</span>
                   <span class="pedido-cliente">{{ ped.cliente_nombre || 'Sin cliente' }}</span>
                   <span class="pedido-packs">{{ ped.packs }}</span>
@@ -1853,6 +1938,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                   </span>
                 </li>
               </ul>
+
+              <!-- Sólo cuando hay más de una página: con ocho pedidos estorba. -->
+              <div v-if="paginasDetalle > 1" class="detalle-paginas">
+                <button type="button" :disabled="paginaDetalleActual === 1" aria-label="Anterior"
+                        @click="paginaDetalle = paginaDetalleActual - 1">
+                  <AppIcon name="chevronLeft" :size="15" />
+                </button>
+                <span>{{ paginaDetalleActual }} de {{ paginasDetalle }}</span>
+                <button type="button" :disabled="paginaDetalleActual === paginasDetalle" aria-label="Siguiente"
+                        @click="paginaDetalle = paginaDetalleActual + 1">
+                  <AppIcon name="chevronRight" :size="15" />
+                </button>
+              </div>
             </template>
           </div>
         </div>
@@ -4437,6 +4535,52 @@ body {
 .c-morado { color: var(--purple); }
 .c-ambar  { color: #b45309; }
 .c-rojo   { color: var(--danger); }
+
+.detalle-paginas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.detalle-paginas button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.detalle-paginas button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Cuándo se calculó lo que se está viendo. Discreto: informa, no compite. */
+.actualizado {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  /* En el móvil la cabecera ya va justa; esto cabe pero sin apretar los botones. */
+  .actualizado {
+    flex: 1 1 100%;
+    order: 3;
+    text-align: center;
+  }
+}
 
 /* ==========================================================================
    LOS TAMAÑOS, DE PEQUEÑO A GRANDE

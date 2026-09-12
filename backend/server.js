@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import * as ventra from './ventra.js';
-import { arrancarEventos, avisar, escuchar, puedoVigilar, cuantosEscuchan, redisListo } from './eventos.js';
+import { arrancarEventos, avisar, escuchar, puedoVigilar, cuantosEscuchan, redisListo, leerCache, guardarCache, borrarCache } from './eventos.js';
 import {
   listarAsignaciones, mesesConAsignaciones, crearAsignacion, borrarAsignacion,
   listarCobros, marcarCobro, desmarcarCobro, cobrosManualesSet,
@@ -32,26 +32,105 @@ const SUCURSAL_ID = process.env.PROCOVAR_SUCURSAL_ID || '';
  * `ventra.js`.
  */
 
-// Caché en memoria con TTL. cachea la promesa para evitar "thundering herd"
-// (varias requests concurrentes comparten el mismo fetch).
-const cache = new Map();
+/**
+ * La caché: primero lo que ya hay, y el refresco por detrás.
+ *
+ * # Qué tardaba
+ *
+ * `/api/almacen` en frío tardaba **16,5 segundos**: son 90 días de ventas de Ventra por
+ * la VPN para sacar los precios, que Ventra no da en la ficha del producto. Y como el
+ * navegador pedía las tres cosas a la vez, la pantalla entera se quedaba esperando por el
+ * almacén aunque el usuario estuviera mirando el resumen.
+ *
+ * # Cómo va ahora
+ *
+ * **Si hay valor guardado, se devuelve YA**, aunque esté pasado de hora, y el refresco se
+ * lanza por detrás. La pantalla nunca espera a Ventra: como mucho enseña el dato de hace
+ * un minuto mientras llega el nuevo, y cuando llega avisa por `/api/eventos`. Un dato de
+ * hace un minuto es lo que había de todas formas; lo que no puede haber es una pantalla en
+ * blanco dieciséis segundos.
+ *
+ * La primera vez de todas sí hay que esperar, porque no hay nada que enseñar. Por eso el
+ * vigilante calienta al arrancar.
+ *
+ * # Y en Redis, con el prefijo del proyecto
+ *
+ * Estaba en memoria, así que **cada despliegue empezaba en frío** y la primera persona que
+ * abría se comía los dieciséis segundos. En Redis sobrevive al despliegue y lo comparten
+ * todas las copias del backend. Con prefijo `asignacion:` porque el Redis es de la casa y
+ * hay más proyectos dentro.
+ */
+const CACHE_PREFIX = 'asignacion:cache:';
 
-function cached(key, ttlMs, fn) {
-  const now = Date.now();
-  const hit = cache.get(key);
-  if (hit && now - hit.ts < ttlMs) return hit.promise;
-  const promise = Promise.resolve().then(fn).catch(err => {
-    cache.delete(key);
-    throw err;
-  });
-  cache.set(key, { ts: now, promise });
-  return promise;
+/** Lo que hay en marcha ahora mismo, para que dos peticiones no disparen dos consultas. */
+const enCurso = new Map();
+/** Espejo en memoria: si Redis no está, esto sigue siendo una caché normal. */
+const enMemoria = new Map();
+
+async function leerDeLaCache(key) {
+  const local = enMemoria.get(key);
+
+  if (local) return local;
+
+  const crudo = await leerCache(CACHE_PREFIX + key);
+
+  if (!crudo) return null;
+
+  enMemoria.set(key, crudo);
+
+  return crudo;
 }
 
-function invalidate(prefix) {
-  for (const key of cache.keys()) {
-    if (key.startsWith(prefix)) cache.delete(key);
+function calcular(key, fn) {
+  const yaVa = enCurso.get(key);
+
+  if (yaVa) return yaVa;
+
+  const promesa = Promise.resolve()
+    .then(fn)
+    .then(async (valor) => {
+      const guardado = { ts: Date.now(), valor };
+
+      enMemoria.set(key, guardado);
+      await guardarCache(CACHE_PREFIX + key, guardado);
+
+      return valor;
+    })
+    .finally(() => enCurso.delete(key));
+
+  enCurso.set(key, promesa);
+
+  return promesa;
+}
+
+async function cached(key, ttlMs, fn) {
+  const guardado = await leerDeLaCache(key);
+
+  if (!guardado) return calcular(key, fn);
+
+  // Pasado de hora: se devuelve igual y se refresca por detrás. Si el refresco falla, el
+  // dato viejo sigue ahí, que es mejor que un error en pantalla.
+  if (Date.now() - guardado.ts >= ttlMs) {
+    calcular(key, fn).catch((e) => console.warn(`[cache] no se pudo refrescar ${key}:`, e.message));
   }
+
+  return guardado.valor;
+}
+
+async function invalidate(prefix) {
+  for (const key of [...enMemoria.keys()]) {
+    if (key.startsWith(prefix)) {
+      enMemoria.delete(key);
+      await borrarCache(CACHE_PREFIX + key);
+    }
+  }
+}
+
+/** Cuándo se calculó cada cosa, para poder decirlo en pantalla. */
+async function cuandoSeCalculo(key) {
+  const guardado = await leerDeLaCache(key);
+
+  return guardado ? new Date(guardado.ts).toISOString() : null;
 }
 
 
@@ -406,7 +485,7 @@ app.post('/api/asignaciones', async (req, res, next) => {
      * vigilante es para lo que cambia solo —un pedido nuevo, una factura—; esto es un
      * cambio nuestro y se sabe en el momento.
      */
-    invalidate('');
+    void invalidate('');
     void avisar('asignaciones');
 
     res.json({ success: true, id: nueva.id, asignacion: nueva, aviso });
@@ -420,7 +499,7 @@ app.delete('/api/asignaciones/:id', async (req, res, next) => {
 
     if (!borrada) return res.status(404).json({ success: false, error: 'Asignación no encontrada' });
 
-    invalidate('');
+    void invalidate('');
     void avisar('asignaciones');
 
     res.json({ success: true });
@@ -943,8 +1022,23 @@ app.get('/api/eventos', (req, res) => {
 });
 
 /** Para saber desde fuera si esto está vivo y cuántas pantallas hay enganchadas. */
-app.get('/api/eventos/estado', (req, res) => {
-  res.json({ redis: redisListo(), escuchando: cuantosEscuchan() });
+app.get('/api/eventos/estado', async (req, res) => {
+  res.json({
+    redis: redisListo(),
+    escuchando: cuantosEscuchan(),
+    /*
+     * Cuándo se calculó cada cosa por última vez.
+     *
+     * La pantalla lo enseña —«actualizado hace 2 minutos»— porque con la caché sirviendo
+     * lo viejo mientras refresca, lo que se ve puede ser de hace un rato. Decirlo es la
+     * diferencia entre un dato con fecha y un dato que parece de ahora y no lo es.
+     */
+    calculado: {
+      ventas: await cuandoSeCalculo('ventas'),
+      despachos: await cuandoSeCalculo('despachos'),
+      almacen: await cuandoSeCalculo('almacen'),
+    },
+  });
 });
 
 /**
@@ -966,10 +1060,19 @@ async function vigilar() {
   try {
     if (!(await puedoVigilar(50))) return;
 
+    /*
+     * El almacén también, aunque no entre en la huella.
+     *
+     * Es lo que tardaba 16 segundos en frío —90 días de ventas de Ventra para sacar los
+     * precios—. Calentándolo aquí, quien abra la pantalla lo encuentra hecho. No entra en
+     * la huella porque el stock se mueve todo el rato y avisaría cada minuto sin que haya
+     * pasado nada que mirar.
+     */
     const [resumen, ventas, asignaciones] = await Promise.all([
       computeResumen(),
       computeVentas(),
       getAsignaciones(),
+      computeAlmacen().catch(() => null),
     ]);
     const huella = JSON.stringify([resumen, ventas, asignaciones]);
 
