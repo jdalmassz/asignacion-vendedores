@@ -1180,7 +1180,7 @@ body {
 }
 
 .header-content {
-  max-width: 1200px;
+  max-width: var(--ancho, 1200px);
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -1355,7 +1355,15 @@ body {
 
 /* Main Content */
 .main-content {
-  max-width: 1200px;
+  /**
+   * Ancho del contenido.
+   *
+   * Estaba clavado en 1200 px: en un monitor de 27 pulgadas dejaba media pantalla en
+   * blanco a cada lado, y las tablas de ventas —que tienen ocho columnas— seguían
+   * apretadas teniendo sitio de sobra al lado. Ahora crece con la pantalla hasta un tope
+   * donde el texto sigue siendo cómodo de leer.
+   */
+  max-width: var(--ancho, 1200px);
   margin: 0 auto;
   padding: 24px;
   display: flex;
@@ -2560,26 +2568,150 @@ body {
   }
 }
 
-/* ==========================================================================
-   TABLETA  (641–1024 px)
-   ========================================================================== */
-
-@media (min-width: 641px) and (max-width: 1024px) {
-  .main-content {
-    padding: 20px 16px;
-  }
-
-  .vendedor-grid {
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    padding: 16px;
-  }
-}
-
 /* Quien haya pedido menos movimiento en su sistema, que no lo tenga. */
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ==========================================================================
+   LOS TAMAÑOS, DE PEQUEÑO A GRANDE
+
+   Los cortes no son números redondos por gusto: cada uno es el punto donde algo
+   concreto deja de caber o empieza a sobrar sitio.
+
+     ≤ 380   teléfono estrecho: una columna para todo
+     ≤ 640   teléfono: el selector pasa a deslizador, las tablas ruedan
+     ≤ 900   tableta de pie: dos columnas
+     ≤ 1280  tableta apaisada y portátil pequeño: el diseño de siempre
+     ≥ 1440  monitor grande: el contenido crece en vez de dejar los lados vacíos
+     ≥ 1800  monitor muy ancho: tope, que una línea de texto larguísima no se lee
+
+   Y aparte, la pantalla BAJA (teléfono tumbado), que no es cuestión de ancho.
+   ========================================================================== */
+
+:root {
+  --ancho: 1200px;
+}
+
+/* --- Tableta de pie: 641–900 -------------------------------------------- */
+@media (min-width: 641px) and (max-width: 900px) {
+  .main-content {
+    padding: 20px 16px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vendedor-grid {
+    /* Dos caben con holgura; tres se quedarían en 210 px y el nombre del producto
+       no entra. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 16px;
+  }
+
+  .form-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* --- Portátil: 901–1280 -------------------------------------------------- */
+@media (min-width: 901px) and (max-width: 1280px) {
+  .main-content {
+    padding: 24px 20px;
+  }
+
+  .vendedor-grid {
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
+}
+
+/* --- Monitor grande: desde 1440 ------------------------------------------ */
+@media (min-width: 1440px) {
+  :root {
+    --ancho: 1440px;
+  }
+
+  .stats-grid {
+    /* Las cuatro cifras en una fila: es un resumen, se lee de un vistazo o no sirve. */
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .vendedor-grid {
+    gap: 20px;
+    padding: 24px;
+  }
+}
+
+/* --- Monitor muy ancho: desde 1800 --------------------------------------- */
+@media (min-width: 1800px) {
+  :root {
+    /* Tope. Más ancho y una fila de tabla se vuelve imposible de seguir con la vista
+       de un extremo al otro. */
+    --ancho: 1680px;
+  }
+
+  .vendedor-grid {
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  }
+}
+
+/* --- Teléfono tumbado ----------------------------------------------------
+   No es cuestión de ancho sino de ALTO: en apaisado quedan ~350 px de alto, y
+   una cabecera de 72 px más el selector se comen la mitad de la pantalla. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .app-header {
+    position: static;
+  }
+
+  .header-content {
+    flex-direction: row;
+    align-items: center;
+    height: auto;
+    padding: 8px 0;
+  }
+
+  .header-title h1 {
+    font-size: 15px;
+  }
+
+  .header-title .subtitle {
+    display: none;
+  }
+
+  .main-content {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .seccion-tabs button {
+    padding: 8px 10px;
+  }
+}
+
+/* --- Imprimir ------------------------------------------------------------
+   Alguien va a querer llevarse el resumen en papel al almacén. */
+@media print {
+  .app-header,
+  .seccion-tabs,
+  .tabs-puntos,
+  .header-actions,
+  .btn {
+    display: none !important;
+  }
+
+  .card {
+    box-shadow: none;
+    border: 1px solid #ccc;
+    break-inside: avoid;
+  }
+
+  .main-content {
+    max-width: none;
+    padding: 0;
   }
 }
 </style>
