@@ -506,8 +506,8 @@ const resumenPorVendedor = computed(() => {
       producto_nombre: item.producto_nombre,
       asignado: item.asignado,
       en_proceso: item.en_proceso,
-      // El servidor manda los dos con el mismo valor mientras se retira el viejo.
-      facturado: item.facturado ?? item.cobrado ?? 0,
+      // De lo despachado, lo que se facturó distinto de lo que se pidió.
+      cambiado: item.cambiado ?? 0,
       exceso: item.exceso ?? 0,
       completada: item.completada,
       pendiente: item.pendiente,
@@ -538,7 +538,7 @@ function inicialesDe(nombre) {
 
 /** Lo de un vendedor, sumado, para poder comparar vendedores sin leer sus filas. */
 function totalesDe(item) {
-  const t = { asignado: 0, en_proceso: 0, facturado: 0, completada: 0, vendido: 0, exceso: 0 }
+  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0 }
   for (const p of item.productos) {
     for (const k in t) t[k] += p[k] || 0
   }
@@ -549,7 +549,7 @@ function totalesDe(item) {
  * Cómo se reparte lo asignado de un producto, en porcentaje.
  *
  * Cuatro tramos que suman lo asignado: lo que ya salió del almacén, lo que está
- * facturado esperando salir, lo que tiene pedido sin facturar, y lo que nadie ha
+ * salió con factura cambiada, lo que tiene pedido sin salir, y lo que nadie ha
  * tocado. Una barra se lee de un vistazo; seis números en seis columnas de 40 px,
  * no.
  *
@@ -560,7 +560,7 @@ function totalesDe(item) {
 function tramosDe(p) {
   const asignado = p.asignado || 0
   const despachado = p.completada || 0
-  const facturado = p.facturado || 0
+  const cambiado = Math.min(p.cambiado || 0, despachado)
   const proceso = p.en_proceso || 0
 
   /*
@@ -577,16 +577,20 @@ function tramosDe(p) {
    */
   const salioDeMas = Math.max(0, despachado - asignado)
   const dentro = Math.min(despachado, asignado)
-  const comprometido = dentro + facturado + proceso
+  const comprometido = dentro + proceso
   const pedidoDeMas = Math.max(0, comprometido - asignado)
+
+  // De lo que salió, la parte que se facturó cambiada va en su propio tramo. Se reparte
+  // primero sobre lo que cabe dentro de lo asignado.
+  const cambiadoDentro = Math.min(cambiado, dentro)
 
   const base = Math.max(asignado + salioDeMas, comprometido, 1)
   const parte = (n) => `${(n / base) * 100}%`
 
   return {
-    despachado: parte(dentro),
+    despachado: parte(dentro - cambiadoDentro),
+    cambiado: parte(cambiadoDentro),
     salioDeMas: parte(salioDeMas),
-    facturado: parte(facturado),
     proceso: parte(proceso),
     libre: parte(Math.max(0, asignado - comprometido)),
     sinTocar: Math.max(0, asignado - comprometido),
@@ -1203,18 +1207,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                   <div
                     class="barra"
                     role="img"
-                    :aria-label="`De ${prod.asignado} asignados: ${prod.completada} despachados, ${prod.facturado} facturados sin salir, ${prod.en_proceso} con pedido sin facturar`"
+                    :aria-label="`De ${prod.asignado} asignados: ${prod.completada} despachados, de ellos ${prod.cambiado} con factura distinta; ${prod.en_proceso} pedidos sin salir`"
                   >
                     <span class="tramo t-despachado" :style="{ width: tramosDe(prod).despachado }"></span>
+                    <span class="tramo t-cambiado" :style="{ width: tramosDe(prod).cambiado }"></span>
                     <span class="tramo t-exceso" :style="{ width: tramosDe(prod).salioDeMas }"></span>
-                    <span class="tramo t-facturado" :style="{ width: tramosDe(prod).facturado }"></span>
                     <span class="tramo t-proceso" :style="{ width: tramosDe(prod).proceso }"></span>
                     <span class="tramo t-libre" :style="{ width: tramosDe(prod).libre }"></span>
                   </div>
 
                   <p class="marcas">
                     <span v-if="prod.completada" class="marca m-despachado">Despachado <b>{{ prod.completada }}</b></span>
-                    <span v-if="prod.facturado" class="marca m-facturado">Facturado <b>{{ prod.facturado }}</b></span>
+                    <span
+                      v-if="prod.cambiado"
+                      class="marca m-cambiado"
+                      title="Salió, pero la factura no coincidía con lo que se pidió"
+                    >Facturó y cambió <b>{{ prod.cambiado }}</b></span>
                     <span v-if="prod.en_proceso" class="marca m-proceso">En proceso <b>{{ prod.en_proceso }}</b></span>
                     <span v-if="tramosDe(prod).sinTocar" class="marca m-libre">Sin pedido <b>{{ tramosDe(prod).sinTocar }}</b></span>
                     <span
@@ -1246,8 +1254,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
                   <b>{{ totalesDe(item).exceso }}</b> de más
                 </span>
-                <span v-if="totalesDe(item).facturado" class="pie-facturado">
-                  <b>{{ totalesDe(item).facturado }}</b> facturados
+                <span v-if="totalesDe(item).cambiado" class="pie-cambiado">
+                  <b>{{ totalesDe(item).cambiado }}</b> cambiados
                 </span>
                 <span v-if="totalesDe(item).en_proceso" class="pie-proceso">
                   <b>{{ totalesDe(item).en_proceso }}</b> en proceso
@@ -3163,7 +3171,7 @@ body {
    lo que mide un párrafo para enseñar seis números.
 
    Ahora cada producto es una línea con su barra. La barra dice de un vistazo cómo
-   va lo asignado —qué salió, qué está facturado esperando, qué tiene pedido y qué
+   va lo asignado —qué salió, qué salió con la factura cambiada, qué tiene pedido y qué
    no ha tocado nadie—; las cifras van debajo con su nombre escrito entero, que es
    lo que hacía falta para no tener que adivinar qué significaba "Cobr.".
    ========================================================================== */
@@ -3263,7 +3271,7 @@ body {
 }
 
 .pie-despachado b { color: var(--success); }
-.pie-facturado b  { color: var(--primary); }
+
 .pie-proceso b    { color: var(--warning); }
 
 .producto {
@@ -3369,7 +3377,7 @@ body {
 }
 
 .t-despachado { background: var(--success); }
-.t-facturado  { background: var(--primary); }
+.t-cambiado   { background: var(--purple); }
 .t-proceso    { background: var(--warning); }
 .t-exceso     { background: var(--danger); }
 .t-libre      { background: transparent; }
@@ -3410,7 +3418,7 @@ body {
 }
 
 .m-despachado { color: var(--success); }
-.m-facturado  { color: var(--primary); }
+.m-cambiado   { color: var(--purple); }
 .m-proceso    { color: var(--warning); }
 .m-libre      { color: var(--text-light); }
 .m-demas      { color: var(--danger); }

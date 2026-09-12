@@ -459,16 +459,34 @@ async function loadDespachos() {
     const rows = (await ventra.ventas(primero, hoyEnCuba() < ultimo ? hoyEnCuba() : ultimo))
       .map((r) => ({ Note: r.Note, GoodID: r.GoodID, Qtty: r.TotalVendido }));
 
-    const despachosMap = {};   // vendedor|GoodID -> packs despachados
+    const despachosMap = {};        // vendedor|GoodID -> packs despachados
+    const despachosPorFolio = {};   // vendedor|GoodID -> { folio: packs }
     const foliosDespachados = new Set();
+
     for (const row of rows) {
       const vendedor = normalizeVendedorName(row.Note);
       if (!vendedor) continue;
+
+      const clave = `${vendedor}|${row.GoodID}`;
       const m = row.Note.match(/(?:^|;)P-([A-Z0-9\-]+);/i);
-      if (m) foliosDespachados.add(m[1].toUpperCase());
-      despachosMap[`${vendedor}|${row.GoodID}`] = (despachosMap[`${vendedor}|${row.GoodID}`] || 0) + (row.Qtty || 0);
+      const folio = m ? m[1].toUpperCase() : null;
+
+      if (folio) foliosDespachados.add(folio);
+
+      despachosMap[clave] = (despachosMap[clave] || 0) + (row.Qtty || 0);
+
+      /*
+       * El desglose por folio hace falta para poder decir CUÁNTO de lo despachado salió
+       * con una factura distinta de lo que se pidió. Sin él sólo se sabe el total, y
+       * "de estos 912, ¿cuántos se facturaron cambiados?" no tiene respuesta.
+       */
+      if (folio) {
+        if (!despachosPorFolio[clave]) despachosPorFolio[clave] = {};
+        despachosPorFolio[clave][folio] = (despachosPorFolio[clave][folio] || 0) + (row.Qtty || 0);
+      }
     }
-    return { despachosMap, foliosDespachados };
+
+    return { despachosMap, foliosDespachados, despachosPorFolio };
   });
 }
 
@@ -499,55 +517,53 @@ async function computeResumen() {
   }
 
   // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
-  const { despachosMap, foliosDespachados } = await loadDespachos();
+  const { despachosMap, foliosDespachados, despachosPorFolio } = await loadDespachos();
 
   /**
-   * Lo que todavía no ha salido del almacén, separando lo que ya está pagado.
+   * Lo que todavía no ha salido del almacén, y de dónde sale lo que sí salió.
    *
-   * FACTURADO no es COBRADO. Son dos cosas y antes iban en la misma columna.
+   * PEDIDO marca cada pedido con `facturaEstado`: `igual` si se facturó lo que se
+   * pidió, `cambiado` si se facturó otra cosa, `sin_factura` si aún no la tiene. Este
+   * mes: 280 iguales, 83 cambiados y 307 sin factura de 670.
    *
-   * `pedido_cobrado` es un estado que ponen los VENDEDORES: lo declara una persona.
-   * Está vacío en dos de cada tres pedidos del mes (489 de 667), así que como medida
-   * de nada sirve de poco. Lo que dice que la operación se hizo de verdad es que el
-   * pedido esté FACTURADO —`igual`, se facturó lo que se pidió— o que FACTURARA Y
-   * CAMBIARA —`cambiado`, se facturó otra cosa—. En los dos casos hubo factura, que
-   * es el hecho; lo demás es lo que alguien dijo.
+   * Aquí se usa para DOS cosas:
    *
-   * Por eso esta columna salía en cero: el bucle sólo miraba los `en_proceso`, y un
-   * pedido en proceso NUNCA tiene factura —los 131 del mes están `sin_factura`—. La
-   * factura aparece cuando el pedido ya pasó a `completada`, que era justo lo que se
-   * saltaba. Cambiarle el nombre al campo sin tocar el filtro la habría dejado igual
-   * de vacía.
+   *  1. Lo que no ha salido es «en proceso», sin más. Antes se partía en «facturado» y
+   *     «en proceso», y «facturado» era CERO por construcción: tener factura en Ventra
+   *     es ser una venta de Ventra, así que el folio aparece en las notas y el pedido
+   *     cuenta como despachado. De los 363 pedidos con factura del mes, cero tenían el
+   *     folio sin ver. La columna prometía un dato que no podía dar.
    *
-   * Se mira todo lo que todavía no ha salido del almacén:
-   *   - con factura         -> facturado   (hecho, esperando salir)
-   *   - sin factura         -> en proceso  (ni facturado ni despachado)
-   *   - folio ya en Ventra  -> aquí no: eso es `completada`
-   *   - expirada            -> aquí tampoco: caducó, no es trabajo pendiente
+   *  2. `estadoDeFacturaPorFolio` guarda el estado de CADA folio —también el de los ya
+   *     despachados— para poder decir, de lo que salió, cuánto salió con una factura
+   *     distinta de lo que se pidió. Eso sí existe y hasta ahora no se veía.
    *
-   * La marca a mano de esta aplicación NO se suma aquí, a propósito: mide lo que los
-   * vendedores declaran cobrado, que es la otra cosa. Sigue viva y se ve pedido por
-   * pedido en el detalle.
+   * Fuera se quedan los expirados, que caducaron y no son trabajo pendiente, y la
+   * marca a mano de esta aplicación, que mide lo que los vendedores declaran cobrado
+   * —otra cosa— y se ve pedido por pedido en el detalle.
    */
   const orders = await fetchAllOrders(...rangoDelMes());
   const procesoMap = {};
-  const facturadoMap = {};
+  const estadoDeFacturaPorFolio = new Map();
+
   for (const o of orders) {
+    if (o.folio) estadoDeFacturaPorFolio.set(o.folio.toUpperCase(), o.facturaEstado || null);
+
     if (o.estado === 'expirada') continue;
     if (!o.folio) continue;
     if (foliosDespachados.has(o.folio.toUpperCase())) continue;
+
     const vendedor = normalizeVendedorName('V-' + (o.vendedor?.nombre || ''));
     if (!vendedor) continue;
-    // `igual` = se facturó lo que se pidió. `cambiado` = facturó y cambió. Las dos son
-    // factura; ninguna otra cosa lo es.
-    const esFacturado = o.facturaEstado === 'igual' || o.facturaEstado === 'cambiado';
+
     for (const it of (o.items || [])) {
       const goodId = goodIdFromItem(it, goodsIndex);
       if (!goodId) continue;
+
       const key = `${vendedor}|${goodId}`;
       if (!asignInfo[key]) continue;
-      const target = esFacturado ? facturadoMap : procesoMap;
-      target[key] = (target[key] || 0) + (it.packs || 0);
+
+      procesoMap[key] = (procesoMap[key] || 0) + (it.packs || 0);
     }
   }
 
@@ -570,10 +586,26 @@ async function computeResumen() {
   for (const key in asignMap) {
     const info = asignInfo[key];
     const asignado = asignMap[key];
-    const despachado = despachosMap[`${info.vendedor}|${info.goodId}`] || 0;
+    const clave = `${info.vendedor}|${info.goodId}`;
+    const despachado = despachosMap[clave] || 0;
     const completada = despachado;
+
+    /*
+     * De lo que ya salió, cuánto se facturó DISTINTO de lo que se pidió.
+     *
+     * Antes había una columna "Facturado" que era, por construcción, siempre cero:
+     * tener factura en Ventra ES ser una venta de Ventra, así que el folio aparece en
+     * las notas y el pedido cuenta como despachado. De los 363 pedidos con factura del
+     * mes, CERO tenían el folio sin ver. La columna prometía un dato que no podía dar.
+     *
+     * Esto sí existe: 83 de los 670 pedidos del mes facturaron y cambiaron, y hasta
+     * ahora iban dentro de "despachado" sin distinguirse de los que salieron clavados.
+     */
+    let cambiado = 0;
+    for (const [folio, packs] of Object.entries(despachosPorFolio[clave] || {})) {
+      if (estadoDeFacturaPorFolio.get(folio) === 'cambiado') cambiado += packs;
+    }
     const dentroDeLoAsignado = Math.min(despachado, asignado);
-    const facturado = facturadoMap[key] || 0;
     const enProceso = procesoMap[key] || 0;
     resumen.push({
       vendedor: info.vendedor,
@@ -582,19 +614,12 @@ async function computeResumen() {
       producto_nombre: info.producto_nombre,
       asignado,
       en_proceso: enProceso,
-      facturado,
+      /** De lo despachado, cuánto salió con una factura distinta de lo pedido. */
+      cambiado,
       /** Cuánto se pasó de lo asignado. 0 cuando no se pasó. */
       exceso: Math.max(0, despachado - asignado),
-      /**
-       * Se sigue mandando `cobrado` con el mismo valor que `facturado`.
-       *
-       * No es un descuido: hay pantallas y guardados que todavía leen ese nombre, y
-       * quitarlo de golpe las deja en blanco sin que nadie se entere. Se retira cuando
-       * no quede quien lo lea.
-       */
-      cobrado: facturado,
       completada,
-      pendiente: Math.max(0, asignado - dentroDeLoAsignado - facturado)
+      pendiente: Math.max(0, asignado - dentroDeLoAsignado)
     });
   }
   return resumen;
