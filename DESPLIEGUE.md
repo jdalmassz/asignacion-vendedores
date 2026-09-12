@@ -35,7 +35,16 @@ PROCOVAR_SUCURSAL_ID
 PORT                 4000 por defecto
 ```
 
-El frontend no necesita ninguna: llama a `/api` y nginx lo reenvía. `VITE_API_URL` existe
+El frontend necesita saber a dónde reenviar `/api`, porque el nombre del backend lo
+genera el servidor con un sufijo:
+
+```
+BACKEND_HOST         asignacion-backend-jbveio
+BACKEND_PORT         4000
+```
+
+Se sustituyen **al arrancar** (plantilla de nginx), así que cambiarlos no obliga a
+reconstruir. El resto lo llama a `/api` y nginx lo reenvía. `VITE_API_URL` existe
 por si algún día hay que apuntar a otro sitio, y **se aplica al construir**, no al arrancar.
 
 ## Traer los datos viejos

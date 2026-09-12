@@ -1,0 +1,25 @@
+server {
+  listen 80;
+  root /usr/share/nginx/html;
+
+  # La API, al backend, por el nombre que tenga en la red de Docker.
+  #
+  # Va como variable y no escrito a mano porque ese nombre lo GENERA el servidor: al
+  # crear el servicio le añade un sufijo (`asignacion-backend-jbveio`), y ese sufijo
+  # cambia si algún día se recrea. Con el nombre incrustado, el día que cambie el
+  # frontend deja de encontrar la API y no hay nada en el código que lo explique.
+  #
+  # nginx sustituye ${BACKEND_HOST} al arrancar, desde /etc/nginx/templates.
+  location /api/ {
+    proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+  }
+
+  # Una aplicación de una sola página: cualquier ruta que no sea un fichero devuelve el
+  # index y decide el enrutador del navegador. Sin esto, recargar en /vendedores da un
+  # 404 de nginx.
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}
