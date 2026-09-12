@@ -651,6 +651,9 @@ async function computeResumen() {
     const clave = `${info.vendedor}|${info.goodId}`;
     const despachado = despachosMap[clave] || 0;
     const completada = despachado;
+    // Lo que cabe DENTRO de lo asignado: `pendiente` no puede volverse negativo porque
+    // alguien haya sacado de más.
+    const dentroDeLoAsignado = Math.min(despachado, asignado);
 
     /*
      * De lo que ya salió, cuánto se facturó DISTINTO de lo que se pidió, y cuánto salió
