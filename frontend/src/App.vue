@@ -260,50 +260,77 @@ onMounted(async () => {
     }
   })
   await cargarDatos()
-  autoRefresh = setInterval(refreshLigero, 30000)
+  escucharCambios()
 })
 
 onUnmounted(() => {
-  limpiarAutoRefresh()
+  dejarDeEscuchar()
 })
 
-let autoRefresh = null
+/**
+ * Los cambios llegan solos; esta pantalla no pregunta nada.
+ *
+ * Antes había un `setInterval` que pedía el panel entero cada 30 segundos y lo comparaba
+ * consigo mismo. Con tres pestañas abiertas eran seis consultas por minuto a PEDIDO y a
+ * Ventra por la VPN para recibir, casi siempre, lo mismo. Y encima no servía: avisaba de
+ * que había cambios, pero había que recargar para verlos.
+ *
+ * Ahora el servidor mira una vez para todos y avisa por `/api/eventos`. El navegador abre
+ * esa conexión y espera. `EventSource` reconecta solo si se cae la red o si el backend se
+ * redespliega, así que no hay que vigilar nada.
+ */
+let fuente = null
 
-let snapshotResumen = ''
-let snapshotVentas = ''
-let snapshotAsignaciones = ''
-const hayCambios = ref(false)
-const hayCambiosAsig = ref(false)
 
-function snapshotDe(arr) {
-  return JSON.stringify(arr || [])
-}
-
-function limpiarAutoRefresh() {
-  if (autoRefresh) {
-    clearInterval(autoRefresh)
-    autoRefresh = null
+function dejarDeEscuchar() {
+  if (fuente) {
+    fuente.close()
+    fuente = null
   }
 }
 
-async function refreshLigero() {
-  if (loading.value) return
+function escucharCambios() {
+  dejarDeEscuchar()
+
   try {
-    const r = await axios.get(`${API_URL}/dashboard`)
-    const nuevoSnapResumen = snapshotDe(r.data.resumen)
-    const nuevoSnapVentas = snapshotDe(r.data.ventas)
-    const nuevoSnapAsignaciones = snapshotDe(r.data.asignaciones)
-    if (nuevoSnapResumen !== snapshotResumen || nuevoSnapVentas !== snapshotVentas) {
-      hayCambios.value = true
-    }
-    // El aviso de "hay cambios" compara contra el mes en curso. Mirando un mes pasado
-    // saltaría con cada latido sin que haya cambiado nada de lo que estás viendo.
-    if (nuevoSnapAsignaciones !== snapshotAsignaciones
-        && (!mesElegido.value || mesElegido.value === mesEnCurso())) {
-      hayCambiosAsig.value = true
-    }
+    fuente = new EventSource(`${API_URL}/eventos`)
   } catch (e) {
-    console.error('Error comprobando cambios:', e)
+    // Sin eventos la pantalla sigue sirviendo: se ve lo que había al abrirla y el botón
+    // de recargar está ahí. Peor sería quedarse en blanco.
+    console.warn('No se pudieron escuchar los cambios:', e)
+
+    return
+  }
+
+  fuente.onmessage = (e) => {
+    let dato = {}
+
+    try {
+      dato = JSON.parse(e.data)
+    } catch {
+      return
+    }
+
+    if (dato.que === 'conectado') return
+
+    /*
+     * Se recarga, no se avisa.
+     *
+     * El aviso de «hay cambios» obligaba a pulsar algo para verlos, que es lo mismo que
+     * recargar a mano. Si el servidor dice que cambió, se trae y se pinta: para eso está
+     * la transición, para que el cambio se vea llegar en vez de aparecer de golpe.
+     */
+    if (dato.que === 'asignaciones') {
+      void cargarAsignaciones()
+      void cargarResumen()
+    } else {
+      void cargarDatos()
+    }
+  }
+
+  // `EventSource` reintenta solo; esto es sólo para que quede en la consola si pasa mucho.
+  fuente.onerror = () => {
+    if (fuente?.readyState === EventSource.CLOSED) console.warn('Conexión de eventos cerrada')
   }
 }
 
@@ -340,11 +367,6 @@ async function cargarDatos() {
     if (uniqueVendedores.length > 0) {
       vendedorSeleccionado.value = uniqueVendedores[0]
     }
-    snapshotResumen = snapshotDe(resumen.value)
-    snapshotVentas = snapshotDe(ventas.value)
-    snapshotAsignaciones = snapshotDe(asignaciones.value)
-    hayCambios.value = false
-    hayCambiosAsig.value = false
   } catch (e) {
     error.value = 'Error al cargar datos: ' + (e.message || e)
     console.error(e)
@@ -1042,8 +1064,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             <span v-if="!showForm"><AppIcon name="plus" :size="16" /> Nueva Asignación</span>
             <span v-else><AppIcon name="x" :size="16" /> Cancelar</span>
           </button>
-          <button class="btn btn-ghost ref-btn" @click="cargarDatos" :title="hayCambios ? 'Hay cambios disponibles — clic para actualizar' : 'Actualizar datos'">
-            <AppIcon name="refresh" :size="16" /><span v-if="hayCambios" class="ref-badge"></span>
+          <!-- Sin chapa de «hay cambios»: ahora llegan solos. El botón se queda para
+               forzar una recarga cuando alguien quiera asegurarse. -->
+          <button class="btn btn-ghost ref-btn" @click="cargarDatos" title="Actualizar datos">
+            <AppIcon name="refresh" :size="16" />
           </button>
         </div>
       </div>
@@ -1126,11 +1150,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               <AppIcon :name="s.icono" :size="14" /> {{ s.titulo }}
               <!-- El contador dice si hay algo ahí dentro sin tener que entrar. -->
               <span v-if="cuentaSeccion(s.id) !== null" class="tab-badge">{{ cuentaSeccion(s.id) }}</span>
-              <span
-                v-if="s.id === 'asignaciones' && hayCambiosAsig"
-                class="tab-badge-dot"
-                title="Hay cambios en las asignaciones — clic para actualizar"
-              ></span>
             </button>
           </div>
 
@@ -2829,22 +2848,6 @@ body {
   border-radius: 10px;
   margin-left: 6px;
   font-weight: 600;
-}
-
-.tab-badge-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--danger);
-  margin-left: 6px;
-  vertical-align: middle;
-  animation: pulse-dot 1.5s infinite ease-in-out;
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
 }
 
 /* Vendedor Tabs */
