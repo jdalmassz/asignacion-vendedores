@@ -507,6 +507,7 @@ const resumenPorVendedor = computed(() => {
       asignado: item.asignado,
       en_proceso: item.en_proceso,
       // De lo despachado, lo que se facturó distinto de lo que se pidió.
+      pedido: item.pedido ?? 0,
       cambiado: item.cambiado ?? 0,
       sin_pedido: item.sin_pedido ?? 0,
       exceso: item.exceso ?? 0,
@@ -1216,6 +1217,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     <span class="tramo t-proceso" :style="{ width: tramosDe(prod).proceso }"></span>
                     <span class="tramo t-libre" :style="{ width: tramosDe(prod).libre }"></span>
                   </div>
+
+                  <!--
+                    Pedido contra factura, que es para lo que sirve esta pantalla:
+                    ver si se está llevando lo que se pidió. La diferencia se dice con
+                    signo, que un +210 y un -80 no significan lo mismo.
+                  -->
+                  <p v-if="prod.pedido" class="cotejo">
+                    Pidieron <b>{{ prod.pedido }}</b>
+                    <span class="cotejo-flecha">→</span>
+                    facturado <b>{{ prod.completada - prod.sin_pedido }}</b>
+                    <span
+                      v-if="prod.completada - prod.sin_pedido - prod.pedido"
+                      class="cotejo-dif"
+                      :class="{ 'dif-menos': prod.completada - prod.sin_pedido - prod.pedido < 0 }"
+                    >{{ prod.completada - prod.sin_pedido - prod.pedido > 0 ? '+' : '' }}{{ prod.completada - prod.sin_pedido - prod.pedido }}</span>
+                    <span v-else class="cotejo-igual">clavado</span>
+                  </p>
 
                   <p class="marcas">
                     <span v-if="prod.completada" class="marca m-despachado">Despachado <b>{{ prod.completada }}</b></span>
@@ -4315,6 +4333,46 @@ body {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
   border-radius: 6px;
+}
+
+/* --- Pedido contra factura ------------------------------------------------ */
+
+.cotejo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  color: var(--text-light);
+}
+
+.cotejo b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.cotejo-flecha {
+  opacity: 0.5;
+}
+
+/* La diferencia es lo que se mira, así que pesa más que el resto de la línea. */
+.cotejo-dif {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--purple);
+}
+
+.dif-menos {
+  color: var(--warning);
+}
+
+.cotejo-igual {
+  color: var(--success);
+  font-weight: 600;
 }
 
 /* ==========================================================================
