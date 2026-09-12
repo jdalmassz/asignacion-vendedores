@@ -1060,6 +1060,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
       </section>
 
       <!--
+        El cambio de sección también se acompaña.
+
+        Las cuatro secciones miden cosas distintas -una rejilla de tarjetas, una tabla
+        de treinta filas, una matriz de once columnas-, así que al cambiar de pestaña
+        la página saltaba de un tamaño a otro en un fotograma. Aquí la salida es
+        inmediata y sólo la entrada se atenúa: si la salida también durara, quedaría un
+        hueco vacío entre las dos y la página encogería y volvería a crecer, que es
+        peor que el salto.
+      -->
+      <Transition name="seccion">
+      <div :key="seccionActiva" class="seccion-contenido">
+
+      <!--
         Cada sección en su propia tarjeta, con su cabecera.
 
         Resumen y Asignaciones vivían DENTRO de la tarjeta del selector, así que la
@@ -1131,6 +1144,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
 
                 </li>
               </ul>
+
+              <!--
+                El pie va pegado al fondo de la tarjeta.
+
+                Al igualar el alto de las tarjetas de una fila, a la del vendedor con un
+                solo producto le sobraban doscientos píxeles en blanco. Con el pie abajo
+                ese hueco deja de ser un vacío: cierra la tarjeta y repite los totales
+                del vendedor, que es lo que se compara entre uno y otro.
+              -->
+              <footer class="vendedor-pie">
+                <span><b>{{ totalesDe(item).asignado }}</b> asignados</span>
+                <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
+                <span v-if="totalesDe(item).facturado" class="pie-facturado">
+                  <b>{{ totalesDe(item).facturado }}</b> facturados
+                </span>
+                <span v-if="totalesDe(item).en_proceso" class="pie-proceso">
+                  <b>{{ totalesDe(item).en_proceso }}</b> en proceso
+                </span>
+              </footer>
             </article>
           </div>
           <div v-else class="empty-state">
@@ -1328,6 +1360,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
           </div>
 
           <div class="ventas-detalle">
+          <!--
+            Al cambiar de vendedor el contenido se cruza en vez de aparecer de golpe.
+
+            Sin esto, pasar de "Todos" -una matriz de once columnas- a un vendedor con
+            tres productos es un parpadeo seco: desaparece un bloque grande y aparece
+            otro pequeño en el mismo fotograma, y la vista tiene que volver a buscar
+            dónde está todo. Con el cruce el ojo sigue el cambio.
+          -->
+          <Transition name="cambio" mode="out-in">
+          <div :key="vendedorSeleccionado || 'todos'">
         <!-- Matriz cuando está "Todos" -->
         <div v-if="!vendedorSeleccionado" class="matriz-ventas">
           <table class="mini-table">
@@ -1404,13 +1446,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
           <p>No hay ventas para este vendedor</p>
         </div>
           </div>
+          </Transition>
+          </div>
         </div>
       </section>
+
+      </div>
+      </Transition>
 
     </main>
       <!-- El detalle de una fila: ventana en escritorio, cajón en móvil. Fuera de la
          rejilla, para que abrirlo no mueva de sitio a los demás vendedores. -->
     <Teleport to="body">
+      <Transition name="ventana">
       <div v-if="filaExpandida && detalleDe" class="capa" @click.self="cerrarDetalle">
         <div class="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo">
           <!-- El asa sólo se ve en el móvil: es lo que dice que esto es un cajón y
@@ -1475,6 +1523,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
           </div>
         </div>
       </div>
+      </Transition>
     </Teleport>
   </div>
 </template>
@@ -2189,7 +2238,16 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
   padding: 20px 24px;
-  align-items: start;
+  /*
+   * Todas las tarjetas de una fila, del mismo alto.
+   *
+   * Con `align-items: start` cada tarjeta medía lo que midieran sus productos, y como
+   * un vendedor lleva tres y otro siete, la fila la marcaba la más alta y las demás
+   * dejaban un hueco debajo: la rejilla salía dentada y parecía que las tarjetas
+   * crecían y encogían al pasar de una fila a otra. Igualadas, el hueco que sobra
+   * queda DENTRO de la tarjeta, donde no rompe la cuadrícula.
+   */
+  align-items: stretch;
 }
 
 /* Filtro Fecha */
@@ -2946,11 +3004,39 @@ body {
 
 .producto-lista {
   list-style: none;
+  /* Se come el espacio que sobra, así el pie queda abajo del todo. */
+  flex: 1;
 }
+
+.vendedor-pie {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text-light) 4%, transparent);
+  font-size: 11.5px;
+  color: var(--text-light);
+}
+
+.vendedor-pie b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.pie-despachado b { color: var(--success); }
+.pie-facturado b  { color: var(--primary); }
+.pie-proceso b    { color: var(--warning); }
 
 .producto {
   padding: 12px 16px 14px;
   border-bottom: 1px solid var(--border);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.producto:hover {
+  background: color-mix(in srgb, var(--text-light) 4%, transparent);
 }
 
 .producto:last-child {
@@ -3035,6 +3121,14 @@ body {
 
 .tramo {
   height: 100%;
+  /*
+   * Los tramos se mueven al cambiar los datos.
+   *
+   * La pantalla se refresca sola: sin esto, un pedido que entra hace que la barra
+   * salte de una posición a otra entre dos fotogramas y no se ve QUÉ cambió. Con el
+   * movimiento se ve el tramo verde avanzar, que es justo la noticia.
+   */
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .t-despachado { background: var(--success); }
@@ -3319,7 +3413,6 @@ body {
     min-height: 200px;
     border-radius: 16px 16px 0 0;
     padding-bottom: env(safe-area-inset-bottom);
-    animation: cajon-sube 0.22s ease-out;
   }
 
   .hoja-asa {
@@ -3339,14 +3432,64 @@ body {
   }
 }
 
-@keyframes cajon-sube {
-  from { transform: translateY(100%); }
-  to   { transform: translateY(0); }
+/* ==========================================================================
+   ABRIR Y CERRAR
+
+   Antes sólo había entrada, y sólo en el móvil: la ventana de escritorio aparecía de
+   golpe y las dos desaparecían de golpe. Cerrar sin animación es lo que más se nota,
+   porque el ojo se queda buscando dónde estaba lo que había.
+
+   El fondo se atenúa y la hoja crece un pelo desde el centro; en el móvil, sube y baja
+   por donde entró. Los tiempos son cortos a propósito -180 ms al abrir, 140 al
+   cerrar-: esto se usa decenas de veces al día y una animación lenta se vuelve un
+   peaje.
+   ========================================================================== */
+
+.ventana-enter-active {
+  transition: opacity 0.18s ease;
+}
+
+.ventana-leave-active {
+  transition: opacity 0.14s ease;
+}
+
+.ventana-enter-from,
+.ventana-leave-to {
+  opacity: 0;
+}
+
+.ventana-enter-active .hoja {
+  transition: transform 0.18s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.ventana-leave-active .hoja {
+  transition: transform 0.14s ease-in;
+}
+
+.ventana-enter-from .hoja,
+.ventana-leave-to .hoja {
+  transform: scale(0.96);
+}
+
+@media (max-width: 640px) {
+  /* En el cajón no vale encoger: entra y sale por abajo, por donde vino. */
+  .ventana-enter-from .hoja,
+  .ventana-leave-to .hoja {
+    transform: translateY(100%);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hoja {
-    animation: none;
+  .ventana-enter-active,
+  .ventana-leave-active,
+  .ventana-enter-active .hoja,
+  .ventana-leave-active .hoja {
+    transition: none;
+  }
+
+  .ventana-enter-from .hoja,
+  .ventana-leave-to .hoja {
+    transform: none;
   }
 }
 
@@ -3380,9 +3523,20 @@ body {
 .ventas-lado {
   border-right: 1px solid var(--border);
   padding: 14px 0 14px 12px;
-  /* Diez vendedores caben; cuarenta ruedan aquí dentro, no en la página. */
-  max-height: 520px;
+  /*
+   * Alto FIJO, no `max-height`.
+   *
+   * Con un máximo, la columna se estiraba hasta lo que midiera el detalle de al lado:
+   * "Todos" es una matriz de once columnas y un vendedor con tres productos ocupa un
+   * tercio, así que al cambiar de vendedor la lista crecía o encogía, le aparecía o
+   * le desaparecía su barra, y los nombres se movían solos. Fija, la lista es el
+   * punto quieto de la pantalla: lo único que cambia es lo que se mira.
+   */
+  height: 520px;
   overflow-y: auto;
+  /* Y el hueco de su barra reservado, por lo mismo que en la página entera: sin esto
+     los nombres se desplazan 9 px en cuanto la lista deja de necesitar barra. */
+  scrollbar-gutter: stable;
 }
 
 .lado-etiqueta {
@@ -3421,6 +3575,10 @@ body {
   color: var(--text);
   font: inherit;
   font-size: 12.5px;
+}
+
+.lado-lista button {
+  transition: background 0.14s ease, color 0.14s ease;
 }
 
 .lado-lista button:hover {
@@ -3485,8 +3643,12 @@ body {
     border-right: 0;
     border-bottom: 1px solid var(--border);
     padding: 12px 16px;
+    /* Aquí no hay lista, sólo el desplegable: el alto fijo de la columna dejaría una
+       franja de 520 px con un control dentro. */
+    height: auto;
     max-height: none;
     overflow: visible;
+    scrollbar-gutter: auto;
   }
 
   .lado-etiqueta {
@@ -3645,6 +3807,73 @@ body {
 .btn-reintentar:hover {
   border-color: var(--primary);
   color: var(--primary);
+}
+
+/* --- El cruce al cambiar de vendedor -------------------------------------- */
+
+.cambio-enter-active,
+.cambio-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.cambio-enter-from {
+  opacity: 0;
+  /* Entra desde abajo, muy poco: lo justo para que se lea como que ha cambiado y no
+     como que ha parpadeado. Más recorrido y ya parece que la página se mueve. */
+  transform: translateY(6px);
+}
+
+.cambio-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cambio-enter-active,
+  .cambio-leave-active {
+    transition: none;
+  }
+
+  .cambio-enter-from,
+  .cambio-leave-to {
+    transform: none;
+  }
+}
+
+/* Las secciones se apilan igual que lo hacía `main`, para no perder la separación
+   cuando una sección enseña dos bloques (el aviso de vacío y su tarjeta). */
+.seccion-contenido {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.seccion-enter-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.seccion-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seccion-enter-active {
+    transition: none;
+  }
+
+  .seccion-enter-from {
+    transform: none;
+  }
+
+  /* La regla general, por si se escapa alguna: quien pidió que no se mueva nada, que
+     no se le mueva nada. */
+  .tramo,
+  .producto,
+  .lado-lista button,
+  .producto-flecha {
+    transition: none;
+  }
 }
 
 /* ==========================================================================
