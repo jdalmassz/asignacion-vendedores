@@ -38,13 +38,29 @@ const filtroPreset = ref('mes') // 'hoy', 'mes', 'rango'
  * cuál va antes y cuál después para las flechas. Añadir una tercera es añadirla aquí.
  */
 const SECCIONES = [
-  { id: 'resumen', titulo: 'Resumen por Vendedor', icono: 'clipboard' },
-  { id: 'asignaciones', titulo: 'Mis Asignaciones', icono: 'edit' },
+  { id: 'resumen', titulo: 'Resumen', icono: 'clipboard' },
+  { id: 'asignaciones', titulo: 'Asignaciones', icono: 'edit' },
+  { id: 'almacen', titulo: 'Almacén', icono: 'warehouse' },
+  { id: 'ventas', titulo: 'Ventas', icono: 'cart' },
 ]
 
 const seccionActiva = ref('resumen')
 
 const indiceSeccion = computed(() => SECCIONES.findIndex((s) => s.id === seccionActiva.value))
+
+/**
+ * Cuántas cosas hay en cada sección, para el contador de la pestaña.
+ *
+ * `null` cuando no tiene sentido contar: el resumen es una lectura, no una lista de
+ * cosas que se acumulen.
+ */
+function cuentaSeccion(id) {
+  if (id === 'asignaciones') return asignaciones.value.length
+  if (id === 'almacen') return almacen.value.length
+  if (id === 'ventas') return ventas.value.length
+
+  return null
+}
 
 /** Pasa a la sección de al lado. No da la vuelta: en el extremo la flecha se apaga. */
 function cambiarSeccion(paso) {
@@ -767,9 +783,12 @@ function esFilaExpandida(vendedor, producto_id) {
 
       <!-- Tabs Asignaciones / Resumen -->
       <section class="card">
-        <!-- En pantalla ancha son pestañas de toda la vida. En el móvil se convierten en
-             un deslizador: una sección a la vez, con flechas para pasar. Dos pestañas con
-             sus iconos y su contador no caben en 360 px sin encogerse hasta no leerse. -->
+        <!-- EL SELECTOR MANDA SOBRE LAS CUATRO SECCIONES.
+             Antes sólo gobernaba Resumen y Asignaciones, y Almacén y Ventas iban apiladas
+             debajo: la página era un scroll de cuatro bloques, uno detrás de otro, y en el
+             móvil no se acababa nunca. Ahora se ve una a la vez.
+             En pantalla ancha son pestañas de toda la vida; en el móvil, un deslizador con
+             flechas, porque cuatro pestañas con icono y texto no caben en 360 px. -->
         <div class="seccion-tabs">
           <button
             class="tab-flecha"
@@ -791,7 +810,8 @@ function esFilaExpandida(vendedor, producto_id) {
               @click="seccionActiva = s.id"
             >
               <AppIcon :name="s.icono" :size="14" /> {{ s.titulo }}
-              <span v-if="s.id === 'asignaciones'" class="tab-badge">{{ asignaciones.length }}</span>
+              <!-- El contador dice si hay algo ahí dentro sin tener que entrar. -->
+              <span v-if="cuentaSeccion(s.id) !== null" class="tab-badge">{{ cuentaSeccion(s.id) }}</span>
               <span
                 v-if="s.id === 'asignaciones' && hayCambiosAsig"
                 class="tab-badge-dot"
@@ -932,8 +952,20 @@ function esFilaExpandida(vendedor, producto_id) {
         </div>
       </section>
 
+      <!-- Cuando la sección elegida no tiene nada que enseñar se dice, en vez de dejar la
+           pantalla en blanco: un hueco vacío no se distingue de algo roto. -->
+      <section
+        v-if="(seccionActiva === 'almacen' && !almacen.length) || (seccionActiva === 'ventas' && !ventas.length)"
+        class="card seccion-vacia"
+      >
+        <AppIcon :name="seccionActiva === 'almacen' ? 'warehouse' : 'cart'" :size="28" />
+        <p>
+          {{ seccionActiva === 'almacen' ? 'No hay stock que mostrar.' : 'No hay ventas registradas este mes.' }}
+        </p>
+      </section>
+
       <!-- Stock en Almacén -->
-      <section v-if="almacen.length > 0" class="card">
+      <section v-if="seccionActiva === 'almacen' && almacen.length > 0" class="card">
         <div class="card-header">
           <h2><AppIcon name="warehouse" :size="18" /> Stock en Almacén</h2>
           <span class="badge">{{ totalesAlmacen.productos }} productos</span>
@@ -961,7 +993,7 @@ function esFilaExpandida(vendedor, producto_id) {
       </section>
 
       <!-- Ventas Registradas -->
-      <section v-if="ventas.length > 0" class="card">
+      <section v-if="seccionActiva === 'ventas' && ventas.length > 0" class="card">
         <div class="card-header">
           <h2><AppIcon name="cart" :size="18" /> Ventas Registradas</h2>
           <span class="badge success">${{ totalVentasFiltrado.toFixed(2) }}</span>
@@ -2281,12 +2313,40 @@ body {
    flechas, que es lo que pidió Jose.
    ========================================================================== */
 
+/**
+ * El selector se queda pegado arriba al bajar.
+ *
+ * Es la única navegación que tiene la aplicación, y las tablas de ventas y almacén son
+ * largas: sin esto hay que subir hasta el principio para cambiar de sección. En una vista
+ * única eso es lo que más cansa.
+ */
 .seccion-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: stretch;
   gap: 0;
   padding: 0 24px;
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
+}
+
+/* La tarjeta que lleva el selector se queda sin cuerpo cuando la sección activa vive en
+   otra tarjeta (Almacén, Ventas). Sin esto quedaría un borde suelto debajo de las
+   pestañas, como una caja vacía. */
+.card:has(> .seccion-tabs) .seccion-tabs {
+  border-bottom: none;
+}
+
+.seccion-vacia {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 20px;
+  color: var(--text-light);
+  text-align: center;
 }
 
 /* Las flechas sólo existen en el móvil. */
