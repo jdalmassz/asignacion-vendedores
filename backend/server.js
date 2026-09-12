@@ -3,7 +3,7 @@ import cors from 'cors';
 import compression from 'compression';
 import * as ventra from './ventra.js';
 import {
-  listarAsignaciones, crearAsignacion, borrarAsignacion,
+  listarAsignaciones, mesesConAsignaciones, crearAsignacion, borrarAsignacion,
   listarCobros, marcarCobro, desmarcarCobro, cobrosManualesSet,
 } from './almacen.js';
 
@@ -343,6 +343,26 @@ function loQueFaltaEnLaAsignacion({ vendedor, producto_id, producto_nombre, cant
   return null;
 }
 
+/**
+ * GET /api/asignaciones/meses — los meses que tienen algo.
+ *
+ * La lista de asignaciones enseña un mes cada vez, y por defecto el que corre. Sin esto
+ * no habría forma de llegar a los de antes: el 1 de octubre las de septiembre siguen en
+ * la base pero desaparecen de la pantalla para siempre.
+ */
+app.get('/api/asignaciones/meses', async (req, res, next) => {
+  try {
+    const meses = await mesesConAsignaciones();
+    const actual = mesActual();
+
+    // El mes en curso sale siempre, aunque todavía no tenga ninguna: si no, el
+    // selector no ofrecería el mes que estás mirando.
+    if (!meses.some((m) => m.mes === actual)) meses.unshift({ mes: actual, cuantas: 0 });
+
+    res.json({ meses, actual });
+  } catch (e) { next(e); }
+});
+
 // POST /api/asignaciones
 app.post('/api/asignaciones', async (req, res, next) => {
   try {
@@ -586,6 +606,10 @@ async function computeAlmacen() {
         producto_id: r.Code || r.ID,
         nombre: r.Name,
         precio: r.PriceOut1 || 0,
+        // De cuándo es ese precio. Ventra no guarda precio en la ficha del producto:
+        // sale de la última venta, y puede ser de hace dos años. Ver `preciosRecientes`.
+        precio_fecha: r.precioFecha || null,
+        precio_viejo: !!r.precioViejo,
         stock: r.stock
       });
     }
