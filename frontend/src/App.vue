@@ -1229,11 +1229,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                       class="marca m-sinpedido"
                       title="Salió del almacén sin ningún pedido detrás: Ventra lo facturó y PEDIDO no tiene ese folio, o la factura salió sin folio en la nota"
                     >Salió sin pedido <b>{{ prod.sin_pedido }}</b></span>
+                    <!--
+                      Vender por encima de lo asignado es una VENTA, no un fallo: son
+                      ventas completas del gestor. Por eso no va en rojo de alarma; lo
+                      que hay que ver es que salió y que está cobrado, no reñir por ello.
+                    -->
                     <span
                       v-if="tramosDe(prod).exceso"
                       class="marca m-demas"
-                      :title="`Ya salieron ${prod.completada} de ${prod.asignado} asignados: ${tramosDe(prod).exceso} por encima`"
-                    >Salió de más <b>{{ tramosDe(prod).exceso }}</b></span>
+                      :title="`Vendió ${prod.completada} contra ${prod.asignado} asignados: ${tramosDe(prod).exceso} por encima de su asignación`"
+                    >Vendió de más <b>{{ tramosDe(prod).exceso }}</b></span>
                     <span
                       v-if="tramosDe(prod).comprometidoDeMas"
                       class="marca m-aviso"
@@ -1256,7 +1261,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 <span><b>{{ totalesDe(item).asignado }}</b> asignados</span>
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
-                  <b>{{ totalesDe(item).exceso }}</b> de más
+                  <b>{{ totalesDe(item).exceso }}</b> vendidos de más
                 </span>
                 <span v-if="totalesDe(item).sin_pedido" class="pie-sinpedido">
                   <b>{{ totalesDe(item).sin_pedido }}</b> sin pedido
@@ -3386,7 +3391,7 @@ body {
 .t-despachado { background: var(--success); }
 .t-cambiado   { background: var(--purple); }
 .t-proceso    { background: var(--warning); }
-.t-exceso     { background: var(--danger); }
+.t-exceso     { background: var(--purple); }
 .t-libre      { background: transparent; }
 
 /* --- Las cifras, con su nombre entero ------------------------------------ */
@@ -3429,7 +3434,7 @@ body {
 .m-proceso    { color: var(--warning); }
 .m-libre      { color: var(--text-light); }
 .m-sinpedido  { color: #b45309; }
-.m-demas      { color: var(--danger); }
+.m-demas      { color: var(--purple); }
 .m-aviso      { color: #b45309; }
 
 /* --- El detalle de los pedidos ------------------------------------------- */
