@@ -563,7 +563,6 @@ function totalesDe(item) {
 function tramosDe(p) {
   const asignado = p.asignado || 0
   const despachado = p.completada || 0
-  const cambiado = Math.min(p.cambiado || 0, despachado)
   const proceso = p.en_proceso || 0
   const cerrado = p.cerrado_sin_factura || 0
 
@@ -581,26 +580,34 @@ function tramosDe(p) {
    */
   const salioDeMas = Math.max(0, despachado - asignado)
   const dentro = Math.min(despachado, asignado)
-  const comprometido = dentro + proceso + cerrado
-  const pedidoDeMas = Math.max(0, comprometido - asignado)
 
-  // De lo que salió, la parte que se facturó cambiada va en su propio tramo. Se reparte
-  // primero sobre lo que cabe dentro de lo asignado.
-  const cambiadoDentro = Math.min(cambiado, dentro)
-
-  const base = Math.max(asignado + salioDeMas, comprometido, 1)
+  /*
+   * LA ESCALA DE LA BARRA SÓLO CUENTA LO QUE LA BARRA DIBUJA.
+   *
+   * La barra tenía cinco tramos y al dejarla en tres —despachado, lo que salió de más y
+   * el hueco— se quitaron los dibujos pero NO se quitaron del divisor: seguía midiéndose
+   * contra `dentro + en proceso + cerrado`. Resultado: 912 despachados de 912 asignados
+   * pintaban un tercio de barra, porque el otro tercio y pico lo ocupaban dos tramos
+   * invisibles. Una barra llena de verdad tiene que verse llena.
+   *
+   * La escala es lo asignado; si se despachó de más, crece justo lo que se pasó, que es
+   * lo que hace que el tramo morado asome por el extremo.
+   */
+  const base = Math.max(asignado + salioDeMas, 1)
   const parte = (n) => `${(n / base) * 100}%`
 
   return {
-    despachado: parte(dentro - cambiadoDentro),
-    cambiado: parte(cambiadoDentro),
+    despachado: parte(dentro),
     salioDeMas: parte(salioDeMas),
-    proceso: parte(proceso),
-    cerrado: parte(cerrado),
-    libre: parte(Math.max(0, asignado - comprometido)),
-    sinTocar: Math.max(0, asignado - comprometido),
-    exceso: salioDeMas,
-    comprometidoDeMas: pedidoDeMas
+    // El hueco de la barra es lo que le falta a lo asignado para estar despachado.
+    libre: parte(asignado - dentro),
+    /*
+     * «Sin pedir» es otra cosa y por eso se calcula aparte: de lo asignado, lo que nadie
+     * ha pedido todavía. Un producto puede tener la barra a medias —le falta despachar—
+     * y no tener nada sin pedir, si todo lo que queda ya está pedido.
+     */
+    sinTocar: Math.max(0, asignado - dentro - proceso - cerrado),
+    exceso: salioDeMas
   }
 }
 
