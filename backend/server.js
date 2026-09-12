@@ -324,16 +324,28 @@ async function fetchAllOrdersUncached(desde, hasta) {
 }
 
 // GET /api/vendedores — desde Procovar API
+/**
+ * Los vendedores activos de la sucursal.
+ *
+ * Cacheado cinco minutos: iba a PEDIDO en CADA llamada y tardaba 1,2 segundos, que era lo
+ * más lento de la pantalla una vez arreglado el almacén. Un vendedor se da de alta o de
+ * baja de tarde en tarde; cinco minutos de retraso ahí no le importa a nadie, y al abrir
+ * la pantalla se nota.
+ */
+async function computeVendedores() {
+  return cached('vendedores', 5 * 60 * 1000, async () => {
+    const vendedores = await apiGet('/vendedores');
+    const activos = vendedores.filter((v) => v.activo);
+
+    activos.sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+    return activos.map((v) => ({ id: v.id, nombre: v.nombre, codigo: v.codigo }));
+  });
+}
+
 app.get('/api/vendedores', async (req, res) => {
   try {
-    const vendedores = await apiGet('/vendedores');
-    const activos = vendedores.filter(v => v.activo);
-    activos.sort((a, b) => a.nombre.localeCompare(b.nombre));
-    res.json({ vendedores: activos.map(v => ({
-      id: v.id,
-      nombre: v.nombre,
-      codigo: v.codigo
-    }))});
+    res.json({ vendedores: await computeVendedores() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1073,6 +1085,7 @@ async function vigilar() {
       computeVentas(),
       getAsignaciones(),
       computeAlmacen().catch(() => null),
+      computeVendedores().catch(() => null),
     ]);
     const huella = JSON.stringify([resumen, ventas, asignaciones]);
 
