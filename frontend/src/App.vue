@@ -508,6 +508,7 @@ const resumenPorVendedor = computed(() => {
       en_proceso: item.en_proceso,
       // De lo despachado, lo que se facturó distinto de lo que se pidió.
       pedido: item.pedido ?? 0,
+      cerrado_sin_factura: item.cerrado_sin_factura ?? 0,
       cambiado: item.cambiado ?? 0,
       sin_pedido: item.sin_pedido ?? 0,
       exceso: item.exceso ?? 0,
@@ -540,7 +541,7 @@ function inicialesDe(nombre) {
 
 /** Lo de un vendedor, sumado, para poder comparar vendedores sin leer sus filas. */
 function totalesDe(item) {
-  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0, sin_pedido: 0 }
+  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0, sin_pedido: 0, cerrado_sin_factura: 0 }
   for (const p of item.productos) {
     for (const k in t) t[k] += p[k] || 0
   }
@@ -564,6 +565,7 @@ function tramosDe(p) {
   const despachado = p.completada || 0
   const cambiado = Math.min(p.cambiado || 0, despachado)
   const proceso = p.en_proceso || 0
+  const cerrado = p.cerrado_sin_factura || 0
 
   /*
    * DOS excesos distintos, que antes iban en el mismo número y con la etiqueta
@@ -579,7 +581,7 @@ function tramosDe(p) {
    */
   const salioDeMas = Math.max(0, despachado - asignado)
   const dentro = Math.min(despachado, asignado)
-  const comprometido = dentro + proceso
+  const comprometido = dentro + proceso + cerrado
   const pedidoDeMas = Math.max(0, comprometido - asignado)
 
   // De lo que salió, la parte que se facturó cambiada va en su propio tramo. Se reparte
@@ -594,6 +596,7 @@ function tramosDe(p) {
     cambiado: parte(cambiadoDentro),
     salioDeMas: parte(salioDeMas),
     proceso: parte(proceso),
+    cerrado: parte(cerrado),
     libre: parte(Math.max(0, asignado - comprometido)),
     sinTocar: Math.max(0, asignado - comprometido),
     exceso: salioDeMas,
@@ -1215,6 +1218,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                     <span class="tramo t-cambiado" :style="{ width: tramosDe(prod).cambiado }"></span>
                     <span class="tramo t-exceso" :style="{ width: tramosDe(prod).salioDeMas }"></span>
                     <span class="tramo t-proceso" :style="{ width: tramosDe(prod).proceso }"></span>
+                    <span class="tramo t-cerrado" :style="{ width: tramosDe(prod).cerrado }"></span>
                     <span class="tramo t-libre" :style="{ width: tramosDe(prod).libre }"></span>
                   </div>
 
@@ -1243,6 +1247,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                       title="Salió, pero la factura no coincidía con lo que se pidió"
                     >Facturó y cambió <b>{{ prod.cambiado }}</b></span>
                     <span v-if="prod.en_proceso" class="marca m-proceso">En proceso <b>{{ prod.en_proceso }}</b></span>
+                    <span
+                      v-if="prod.cerrado_sin_factura"
+                      class="marca m-cerrado"
+                      title="Pedidos que PEDIDO dio por completados y que Ventra nunca facturó. Ni salieron ni van a salir solos."
+                    >Cerrado sin factura <b>{{ prod.cerrado_sin_factura }}</b></span>
                     <span
                       v-if="tramosDe(prod).sinTocar"
                       class="marca m-libre"
@@ -1295,6 +1304,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 </span>
                 <span v-if="totalesDe(item).en_proceso" class="pie-proceso">
                   <b>{{ totalesDe(item).en_proceso }}</b> en proceso
+                </span>
+                <span v-if="totalesDe(item).cerrado_sin_factura" class="pie-cerrado">
+                  <b>{{ totalesDe(item).cerrado_sin_factura }}</b> cerrados sin factura
                 </span>
               </footer>
             </article>
@@ -1793,6 +1805,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                       class="sello s-facturado"
                       :title="ped.factura ? `Factura ${ped.factura}` : 'Facturado'"
                     >Facturado</span>
+                    <span
+                      v-if="ped.cerrado_sin_factura"
+                      class="sello s-cerrado"
+                      title="PEDIDO lo dio por completado y Ventra nunca lo facturó"
+                    >Cerrado sin factura</span>
                     <span v-else class="sello s-proceso">Sin factura</span>
                     <span
                       v-if="ped.cobrado_vendedor"
@@ -3415,6 +3432,7 @@ body {
 .t-despachado { background: var(--success); }
 .t-cambiado   { background: var(--purple); }
 .t-proceso    { background: var(--warning); }
+.t-cerrado    { background: var(--danger); }
 .t-exceso     { background: var(--purple); }
 .t-libre      { background: transparent; }
 
@@ -3456,6 +3474,7 @@ body {
 .m-despachado { color: var(--success); }
 .m-cambiado   { color: var(--purple); }
 .m-proceso    { color: var(--warning); }
+.m-cerrado    { color: var(--danger); }
 .m-libre      { color: var(--text-light); }
 .m-sinpedido  { color: #b45309; }
 .m-demas      { color: var(--purple); }
@@ -3563,6 +3582,12 @@ body {
   color: #7c3aed;
   border-color: color-mix(in srgb, var(--purple) 40%, transparent);
   background: color-mix(in srgb, var(--purple) 10%, transparent);
+}
+
+.s-cerrado {
+  color: #991b1b;
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
 }
 
 .s-proceso {
