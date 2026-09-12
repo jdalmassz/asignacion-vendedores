@@ -503,6 +503,7 @@ async function loadDespachos() {
     }
 
     const despachosMap = {};       // vendedor|GoodID -> packs facturados
+    const pedidoMap = {};          // lo que se PIDIÓ de eso mismo, para poder comparar
     const cambiadoMap = {};        // de eso, lo que salió con factura distinta a lo pedido
     const sinPedidoMap = {};       // lo que Ventra facturó y PEDIDO no tiene
     const foliosDespachados = new Set();
@@ -535,6 +536,16 @@ async function loadDespachos() {
           const clave = `${vendedor}|${linea.codigo}`;
 
           sumar(despachosMap, clave, linea.cantidad);
+
+          /*
+           * Cada línea de la factura trae LOS DOS lados: `pedido` es lo que pidió el
+           * cliente y `cantidad` lo que se le facturó. Esa pareja es para lo que sirve
+           * esta pantalla: comprobar pedido contra factura. 27 líneas viejas del mes no
+           * traen `pedido`; ésas no suman por ese lado y se quedan fuera de la
+           * comparación en vez de contarse como cero, que sería inventar una diferencia.
+           */
+          if (linea.pedido != null) sumar(pedidoMap, clave, linea.pedido);
+
           if (pedido.facturaEstado === 'cambiado') sumar(cambiadoMap, clave, linea.cantidad);
         }
 
@@ -551,7 +562,7 @@ async function loadDespachos() {
       sumar(sinPedidoMap, clave, row.TotalVendido);
     }
 
-    return { despachosMap, cambiadoMap, sinPedidoMap, foliosDespachados };
+    return { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, foliosDespachados };
   });
 }
 
@@ -582,7 +593,7 @@ async function computeResumen() {
   }
 
   // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
-  const { despachosMap, cambiadoMap, sinPedidoMap, foliosDespachados } = await loadDespachos();
+  const { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, foliosDespachados } = await loadDespachos();
 
   /**
    * Lo que todavía no ha salido del almacén, y de dónde sale lo que sí salió.
@@ -662,6 +673,7 @@ async function computeResumen() {
      */
     const cambiado = cambiadoMap[clave] || 0;
     const sinPedido = sinPedidoMap[clave] || 0;
+    const pedidoOriginal = pedidoMap[clave] || 0;
 
     const enProceso = procesoMap[key] || 0;
     resumen.push({
@@ -671,6 +683,8 @@ async function computeResumen() {
       producto_nombre: info.producto_nombre,
       asignado,
       en_proceso: enProceso,
+      /** Lo que PIDIERON los clientes de esto, para comparar contra lo facturado. */
+      pedido: pedidoOriginal,
       /** De lo despachado, cuánto salió con una factura distinta de lo pedido. */
       cambiado,
       /** De lo despachado, cuánto salió sin ningún pedido detrás. */
