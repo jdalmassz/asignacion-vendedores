@@ -55,9 +55,18 @@ const indiceSeccion = computed(() => SECCIONES.findIndex((s) => s.id === seccion
  * cosas que se acumulen.
  */
 function cuentaSeccion(id) {
-  if (id === 'asignaciones') return asignaciones.value.length
-  if (id === 'almacen') return almacen.value.length
-  if (id === 'ventas') return ventas.value.length
+  /*
+   * `?.length ?? 0` en vez de `.length`.
+   *
+   * Este contador se pinta en la cabecera, o sea en CADA render. Si una de las tres
+   * listas llega `undefined` -una respuesta que no trae lo que se espera, la API a
+   * medio desplegar- aquí petaba el render y con él la pantalla entera: no se veía la
+   * sección rota, se veía la página en blanco. Un contador no puede tumbar la
+   * aplicación.
+   */
+  if (id === 'asignaciones') return asignaciones.value?.length ?? 0
+  if (id === 'almacen') return almacen.value?.length ?? 0
+  if (id === 'ventas') return ventas.value?.length ?? 0
 
   return null
 }
@@ -287,7 +296,10 @@ async function refreshLigero() {
     if (nuevoSnapResumen !== snapshotResumen || nuevoSnapVentas !== snapshotVentas) {
       hayCambios.value = true
     }
-    if (nuevoSnapAsignaciones !== snapshotAsignaciones) {
+    // El aviso de "hay cambios" compara contra el mes en curso. Mirando un mes pasado
+    // saltaría con cada latido sin que haya cambiado nada de lo que estás viendo.
+    if (nuevoSnapAsignaciones !== snapshotAsignaciones
+        && (!mesElegido.value || mesElegido.value === mesEnCurso())) {
       hayCambiosAsig.value = true
     }
   } catch (e) {
@@ -306,12 +318,22 @@ async function cargarDatos() {
       axios.get(`${API_URL}/vendedores`),
       axios.get(`${API_URL}/almacen`)
     ])
-    resumen.value = rDashboard.data.resumen
-    ventas.value = rDashboard.data.ventas
-    asignaciones.value = rDashboard.data.asignaciones
-    vendedores.value = resVendedores.data.vendedores
-    almacen.value = rAlmacen.data.productos || []
-    totalesAlmacen.value = rAlmacen.data.totales || { productos: 0, unidades: 0, valor: 0 }
+    resumen.value = rDashboard.data?.resumen || []
+    ventas.value = rDashboard.data?.ventas || []
+    /*
+     * El panel siempre trae las del mes EN CURSO. Si estás mirando otro mes, esto te
+     * cambiaría la lista debajo de las manos —y con el selector diciendo "Agosto"—, así
+     * que en ese caso se vuelve a pedir el mes que elegiste.
+     */
+    if (!mesElegido.value || mesElegido.value === mesEnCurso()) {
+      asignaciones.value = rDashboard.data?.asignaciones || []
+    } else {
+      await cargarAsignaciones()
+    }
+    vendedores.value = resVendedores.data?.vendedores || []
+    cargarMeses()
+    almacen.value = rAlmacen.data?.productos || []
+    totalesAlmacen.value = rAlmacen.data?.totales || { productos: 0, unidades: 0, valor: 0 }
 
     // Seleccionar primer vendedor por defecto en ventas
     const uniqueVendedores = [...new Set(ventas.value.map(v => v.vendedor))]
@@ -331,14 +353,61 @@ async function cargarDatos() {
   }
 }
 
+/**
+ * Qué mes enseña la lista de asignaciones.
+ *
+ * Vacío = el que corre. Hasta ahora era lo ÚNICO que se podía ver: el 1 de octubre las
+ * catorce de septiembre siguen en la base pero desaparecen de la pantalla, sin forma de
+ * llegar a ellas. La API ya aceptaba `?mes=`; lo que faltaba era pedirlo.
+ *
+ * El resumen no cambia con esto y es a propósito: mide cómo va lo asignado ESTE mes
+ * contra lo que se está despachando ahora. Mirar septiembre en la lista no debe
+ * reescribir el resumen de octubre.
+ */
+/** El mes en curso en Cuba, igual que lo calcula el servidor. */
+function mesEnCurso() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Havana',
+    year: 'numeric',
+    month: '2-digit',
+  }).format(new Date()).slice(0, 7)
+}
+
+const mesElegido = ref('')
+const mesesDisponibles = ref([])
+
+async function cargarMeses() {
+  try {
+    const res = await axios.get(`${API_URL}/asignaciones/meses`)
+    mesesDisponibles.value = res.data.meses || []
+    if (!mesElegido.value) mesElegido.value = res.data.actual
+  } catch (e) {
+    console.error('Error al cargar los meses:', e)
+  }
+}
+
+/** "2026-09" -> "Septiembre 2026". Un AAAA-MM no se lee, se descifra. */
+function nombreDelMes(mes) {
+  const [a, m] = String(mes || '').split('-')
+  const nombres = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+  return nombres[Number(m) - 1] ? `${nombres[Number(m) - 1]} ${a}` : mes
+}
+
 async function cargarAsignaciones() {
   try {
-    const res = await axios.get(`${API_URL}/asignaciones`)
-    asignaciones.value = res.data.asignaciones
+    const mes = mesElegido.value ? `?mes=${mesElegido.value}` : ''
+    const res = await axios.get(`${API_URL}/asignaciones${mes}`)
+    // `|| []` y no a secas: si la respuesta no trae la lista -un proxy que devuelve
+    // otra cosa, la API a medio desplegar- esto dejaba `asignaciones` en `undefined` y
+    // el contador de la pestaña reventaba la pantalla ENTERA, no sólo esta sección.
+    asignaciones.value = res.data?.asignaciones || []
+    pagina.value = 1
   } catch (e) {
     console.error('Error al cargar asignaciones:', e)
   }
 }
+
+watch(mesElegido, cargarAsignaciones)
 
 async function cargarAlmacen() {
   try {
@@ -754,7 +823,17 @@ const matrizAlmacen = computed(() => {
   for (const alm of almacen.value) {
     for (const p of alm.productos) {
       if (!productos[p.producto_id]) {
-        productos[p.producto_id] = { producto_id: p.producto_id, nombre: p.nombre, precio: p.precio, stock: 0, porAlmacen: {} }
+        productos[p.producto_id] = {
+          producto_id: p.producto_id,
+          nombre: p.nombre,
+          precio: p.precio,
+          // De cuándo es el precio: sin esto la matriz perdía el dato por el camino y
+          // la columna volvía a no poder distinguir un precio de hoy de uno de 2025.
+          precio_fecha: p.precio_fecha || null,
+          precio_viejo: !!p.precio_viejo,
+          stock: 0,
+          porAlmacen: {},
+        }
       }
       productos[p.producto_id].porAlmacen[alm.almacen] = p.stock
       productos[p.producto_id].stock += p.stock
@@ -878,7 +957,8 @@ function cerrarDetalle() {
  */
 let desplazamientoAnterior = ''
 
-watch(filaExpandida, (abierto) => {
+watch([filaExpandida, showForm], ([detalle, form]) => {
+  const abierto = detalle || form
   if (abierto) {
     desplazamientoAnterior = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -898,7 +978,9 @@ onBeforeUnmount(() => {
  * responde parece que se ha quedado colgada.
  */
 function teclaDetalle(e) {
-  if (e.key === 'Escape' && filaExpandida.value) cerrarDetalle()
+  if (e.key !== 'Escape') return
+  if (filaExpandida.value) cerrarDetalle()
+  else if (showForm.value) showForm.value = false
 }
 
 onMounted(() => window.addEventListener('keydown', teclaDetalle))
@@ -942,70 +1024,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
     </div>
 
     <main class="main-content">
-      <!-- Formulario de nueva asignación -->
-      <transition name="slide">
-        <div v-if="showForm" class="form-card">
-          <h2><AppIcon name="clipboard" :size="18" /> Nueva Asignación</h2>
-          <form @submit.prevent="crearAsignacion">
-            <div class="form-row">
-              <div class="form-group">
-                <label>Producto</label>
-                <select v-model="nuevaAsignacion.producto" required>
-                  <option value="">-- Seleccionar --</option>
-                  <option v-for="p in productosFiltrados" :key="p.id" :value="p.id">{{ p.name }} (stock: {{ p.stock }})</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>Cantidad</label>
-                <input type="number" v-model="nuevaAsignacion.cantidad" min="1" placeholder="0" required />
-              </div>
-              <div class="form-group calendar-group">
-                <label>Fecha</label>
-                <div class="calendar-input-wrapper" @click="abrirCalAsignacion">
-                  <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ nuevaAsignacion.fecha }}</span>
-                </div>
-                <div v-if="showCalendar" class="calendar-popup" @click.stop>
-                  <div class="cal-header">
-                    <button type="button" @click="prevMonth" class="cal-nav">&lt;</button>
-                    <span class="cal-title">{{ calMonthName }} {{ calYear }}</span>
-                    <button type="button" @click="nextMonth" class="cal-nav">&gt;</button>
-                  </div>
-                  <div class="cal-weekdays">
-                    <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
-                  </div>
-                  <div class="cal-grid">
-                    <button
-                      v-for="(day, idx) in calDays"
-                      :key="idx"
-                      type="button"
-                      class="cal-day"
-                      :class="{ empty: !day, selected: day && nuevaAsignacion.fecha === `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}` }"
-                      @click="selectCalendarDay(day)"
-                      :disabled="!day"
-                    >{{ day }}</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="form-group">
-              <label>Vendedores ({{ vendedoresSeleccionados.length }}/{{ vendedores.length }})</label>
-              <button type="button" class="btn btn-ghost btn-sm" @click="toggleTodosVendedores">
-                {{ vendedoresSeleccionados.length === vendedores.length ? 'Desmarcar Todos' : 'Seleccionar Todos' }}
-              </button>
-              <div class="vendedores-checklist">
-                <label v-for="v in vendedores" :key="v.id" class="vendedor-check">
-                  <input type="checkbox" :value="v.nombre" v-model="vendedoresSeleccionados" />
-                  <span>{{ v.nombre }}</span>
-                </label>
-              </div>
-            </div>
-            <button type="submit" class="btn btn-success btn-block" :disabled="vendedoresSeleccionados.length === 0">
-              <AppIcon name="save" :size="16" /> Guardar Asignación ({{ vendedoresSeleccionados.length }} vendedor{{ vendedoresSeleccionados.length !== 1 ? 'es' : '' }})
-            </button>
-          </form>
-        </div>
-      </transition>
-
+      <!-- Los totales y las secciones se quedan donde están. -->
       <!-- Totales Generales -->
       <div v-if="resumen.length > 0" class="stats-grid">
         <div class="stat-card stat-primary">
@@ -1213,8 +1232,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
 
       <section v-if="seccionActiva === 'asignaciones'" class="card">
         <div class="card-header">
-          <h2><AppIcon name="edit" :size="18" /> Asignaciones del Mes</h2>
-          <span class="badge">{{ asignaciones ? asignaciones.length : 0 }} {{ (asignaciones ? asignaciones.length : 0) === 1 ? 'asignación' : 'asignaciones' }}</span>
+          <h2><AppIcon name="edit" :size="18" /> Asignaciones</h2>
+          <div class="cabecera-derecha">
+            <label class="elegir-mes">
+              <AppIcon name="calendar" :size="15" />
+              <select v-model="mesElegido" aria-label="Mes de las asignaciones">
+                <option v-for="m in mesesDisponibles" :key="m.mes" :value="m.mes">
+                  {{ nombreDelMes(m.mes) }}<template v-if="m.cuantas"> ({{ m.cuantas }})</template>
+                </option>
+              </select>
+            </label>
+            <span class="badge">{{ asignaciones ? asignaciones.length : 0 }} {{ (asignaciones ? asignaciones.length : 0) === 1 ? 'asignación' : 'asignaciones' }}</span>
+          </div>
         </div>
         <div>
           <div v-if="asignaciones && asignaciones.length > 0" class="table-wrapper">
@@ -1275,8 +1304,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             </span>
           </div>
 
-          <div v-else class="empty-state">
-            <p>No hay asignaciones</p>
+          <!--
+            Condición propia, no `v-else`.
+
+            El `v-else` tiene que ir pegado a su `v-if`, y al meter el pie de la
+            paginación entre los dos se rompió la pareja: Vue dejó de emparejarlos y el
+            "No hay asignaciones" salía SIEMPRE, debajo de las catorce filas.
+          -->
+          <div v-if="!asignaciones || asignaciones.length === 0" class="empty-state">
+            <p>No hay asignaciones en {{ nombreDelMes(mesElegido) }}</p>
           </div>
         </div>
       </section>
@@ -1312,10 +1348,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             <tbody>
               <tr v-for="item in matrizAlmacen.productos" :key="item.producto_id">
                 <td>{{ item.nombre }}</td>
-                <!-- Un producto que no se ha vendido en 90 días no tiene precio en
-                     Ventra. "$0.00" se lee como "vale cero"; sin precio es lo que es. -->
+                <!--
+                  El precio sale de la última venta, no de la ficha: Ventra no guarda
+                  precio en el producto. Si esa venta es vieja se dice de cuándo es, en
+                  vez de esconder el número: saber que el KAPITAL INDUSTRIAL se vendió a
+                  18 en febrero de 2025 es más útil que un "sin precio" que se lee como
+                  que no vale nada.
+                -->
                 <td class="text-right" :class="{ 'sin-precio': !item.precio }">
-                  {{ item.precio ? `$${item.precio.toFixed(2)}` : 'sin precio' }}
+                  <template v-if="item.precio">
+                    ${{ item.precio.toFixed(2) }}
+                    <span v-if="item.precio_viejo" class="precio-viejo" :title="`Último precio conocido, de una venta del ${item.precio_fecha}`">
+                      {{ item.precio_fecha }}
+                    </span>
+                  </template>
+                  <template v-else>nunca se ha vendido</template>
                 </td>
                 <!-- El cero se apaga: en una tabla de diez almacenes, si todos los
                      números pesan lo mismo hay que leerlos uno a uno para ver dónde
@@ -1531,6 +1578,98 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
     </main>
       <!-- El detalle de una fila: ventana en escritorio, cajón en móvil. Fuera de la
          rejilla, para que abrirlo no mueva de sitio a los demás vendedores. -->
+
+    <!--
+      Nueva asignación: ventana en escritorio, cajón en el móvil.
+
+      Estaba dentro del flujo de la página: al abrirlo, el bloque crecía y empujaba
+      hacia abajo los totales, las pestañas y la tabla entera. Elegir nueve vendedores
+      obligaba a mirar cómo se movía todo lo demás, y al cerrarlo la página volvía a
+      dar el salto en sentido contrario. Un formulario que se abre no puede reordenar
+      la pantalla que hay detrás.
+    -->
+    <Teleport to="body">
+      <Transition name="ventana">
+        <div v-if="showForm" class="capa capa-desde-boton" @click.self="showForm = false">
+          <div class="hoja hoja-ancha" role="dialog" aria-modal="true" aria-labelledby="titulo-form">
+            <span class="hoja-asa" aria-hidden="true"></span>
+            <header class="hoja-cabeza">
+              <div class="hoja-quien">
+                <p id="titulo-form">Nueva Asignación</p>
+                <p class="hoja-vendedor">{{ nombreDelMes(mesEnCurso()) }}</p>
+              </div>
+              <button type="button" class="hoja-cerrar" aria-label="Cerrar" @click="showForm = false">
+                <AppIcon name="x" :size="18" />
+              </button>
+            </header>
+
+            <div class="hoja-cuerpo">
+              <form @submit.prevent="crearAsignacion">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Producto</label>
+                <select v-model="nuevaAsignacion.producto" required>
+                  <option value="">-- Seleccionar --</option>
+                  <option v-for="p in productosFiltrados" :key="p.id" :value="p.id">{{ p.name }} (stock: {{ p.stock }})</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Cantidad</label>
+                <input type="number" v-model="nuevaAsignacion.cantidad" min="1" placeholder="0" required />
+              </div>
+              <div class="form-group calendar-group">
+                <label>Fecha</label>
+                <div class="calendar-input-wrapper" @click="abrirCalAsignacion">
+                  <span class="cal-display"><AppIcon name="calendar" :size="16" /> {{ nuevaAsignacion.fecha }}</span>
+                </div>
+                <div v-if="showCalendar" class="calendar-popup" @click.stop>
+                  <div class="cal-header">
+                    <button type="button" @click="prevMonth" class="cal-nav">&lt;</button>
+                    <span class="cal-title">{{ calMonthName }} {{ calYear }}</span>
+                    <button type="button" @click="nextMonth" class="cal-nav">&gt;</button>
+                  </div>
+                  <div class="cal-weekdays">
+                    <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sa</span><span>Do</span>
+                  </div>
+                  <div class="cal-grid">
+                    <button
+                      v-for="(day, idx) in calDays"
+                      :key="idx"
+                      type="button"
+                      class="cal-day"
+                      :class="{ empty: !day, selected: day && nuevaAsignacion.fecha === `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}` }"
+                      @click="selectCalendarDay(day)"
+                      :disabled="!day"
+                    >{{ day }}</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Vendedores ({{ vendedoresSeleccionados.length }}/{{ vendedores.length }})</label>
+              <!-- `btn-ghost` es blanco sobre transparente: está hecho para la cabecera
+                   morada. Aquí el fondo es blanco, así que este botón llevaba todo este
+                   tiempo siendo invisible: ocupaba su sitio y no se veía. -->
+              <button type="button" class="btn btn-suave btn-sm" @click="toggleTodosVendedores">
+                {{ vendedoresSeleccionados.length === vendedores.length ? 'Desmarcar Todos' : 'Seleccionar Todos' }}
+              </button>
+              <div class="vendedores-checklist">
+                <label v-for="v in vendedores" :key="v.id" class="vendedor-check">
+                  <input type="checkbox" :value="v.nombre" v-model="vendedoresSeleccionados" />
+                  <span>{{ v.nombre }}</span>
+                </label>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-success btn-block" :disabled="vendedoresSeleccionados.length === 0">
+              <AppIcon name="save" :size="16" /> Guardar Asignación ({{ vendedoresSeleccionados.length }} vendedor{{ vendedoresSeleccionados.length !== 1 ? 'es' : '' }})
+            </button>
+</form>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <Teleport to="body">
       <Transition name="ventana">
       <div v-if="filaExpandida && detalleDe" class="capa" @click.self="cerrarDetalle">
@@ -1779,10 +1918,23 @@ body {
   transform: translateY(-1px);
 }
 
+/* Sólo para la cabecera morada: blanco sobre el degradado. */
 .btn-ghost {
   background: rgba(255,255,255,0.15);
   color: white;
   padding: 10px;
+}
+
+/* El mismo papel, pero sobre fondo claro. */
+.btn-suave {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-suave:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .btn-ghost:hover {
@@ -1953,24 +2105,6 @@ body {
 }
 
 /* Form Card */
-.form-card {
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 24px;
-  box-shadow: var(--shadow-lg);
-  border: 1px solid var(--border);
-}
-
-.form-card h2 {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .form-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2013,16 +2147,6 @@ body {
 }
 
 /* Slide transition */
-.slide-enter-active,
-.slide-leave-active {
-  transition: all 0.3s ease;
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
 /* Stats Grid */
 .stats-grid {
   display: grid;
@@ -2202,6 +2326,14 @@ body {
 .stock-val {
   color: var(--primary);
   font-weight: 600;
+}
+
+.precio-viejo {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
 }
 
 .sin-precio {
@@ -3468,6 +3600,51 @@ body {
   overflow-y: auto;
 }
 
+/*
+ * El formulario necesita más ancho que el detalle: lleva tres campos en fila y una
+ * rejilla de vendedores que en 560 px se quedaría en una sola columna.
+ */
+.hoja-ancha {
+  width: min(860px, 100%);
+  max-height: min(85vh, 760px);
+}
+
+/* ==========================================================================
+   EL FORMULARIO SALE DEL BOTÓN, NO DEL CENTRO
+
+   Una ventana en mitad de la pantalla no dice de dónde viene: se abre lejos de donde
+   pulsaste y hay que volver a buscar el hilo. Este panel cae justo debajo de "Nueva
+   Asignación", pegado a la derecha como el botón, así que la relación entre lo que
+   pulsas y lo que se abre se ve sola.
+
+   El velo de detrás es más suave que el del detalle: aquí no hace falta apagar la
+   página, sólo dejar claro que lo de delante manda.
+
+   En el móvil esto NO aplica: allí sigue siendo cajón, porque un panel colgado de un
+   botón en 360 px es una ventana pegada a los cuatro bordes.
+   ========================================================================== */
+
+.capa-desde-boton {
+  place-items: start end;
+  /* 80 px = la cabecera (72) más un respiro, para que el panel no la tape. */
+  padding: 80px 24px 24px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.capa-desde-boton .hoja {
+  /* Crece hacia abajo desde su esquina, que es donde está el botón. */
+  transform-origin: top right;
+}
+
+
+@media (max-width: 640px) {
+  /* Cajón, como todo lo demás en el móvil. */
+  .capa-desde-boton {
+    place-items: end stretch;
+    padding: 0;
+  }
+}
+
 /* --- En el móvil, cajón ---------------------------------------------------
    Una ventana centrada en una pantalla de 360 px queda pegada a los cuatro bordes
    y el pulgar no llega arriba del todo. El cajón sube desde donde está la mano. */
@@ -4042,6 +4219,42 @@ body {
   .pag-pasos {
     margin-left: auto;
   }
+}
+
+.cabecera-derecha {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.elegir-mes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-light);
+  min-height: 36px;
+}
+
+.elegir-mes select {
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 34px;
+  padding-right: 4px;
+  cursor: pointer;
+}
+
+.elegir-mes select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* ==========================================================================

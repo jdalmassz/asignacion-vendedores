@@ -77,6 +77,24 @@ export async function listarAsignaciones(mes) {
     .map(salida);
 }
 
+/**
+ * Los meses que tienen alguna asignación, del más nuevo al más viejo.
+ *
+ * Hace falta para poder ofrecer sólo meses que existen. Un selector con los doce del
+ * año enseñaría once pantallas vacías y nadie sabría si es que no hubo asignaciones o
+ * es que algo falla.
+ */
+export async function mesesConAsignaciones() {
+  const d = await db();
+
+  const filas = await d.collection('asignaciones').aggregate([
+    { $group: { _id: { $substr: ['$fecha', 0, 7] }, n: { $sum: 1 } } },
+    { $sort: { _id: -1 } },
+  ]).toArray();
+
+  return filas.filter((f) => f._id).map((f) => ({ mes: f._id, cuantas: f.n }));
+}
+
 export async function crearAsignacion(a) {
   const d = await db();
   const doc = {

@@ -69,17 +69,65 @@ async function pedir(ruta) {
  * Un producto que no se ha vendido nunca se queda sin precio — y eso es honesto: no lo
  * sabemos, y poner cero diría que es gratis.
  */
-async function preciosRecientes() {
-  const hoy = new Date();
-  const desde = new Date(hoy.getTime() - 90 * 24 * 3600 * 1000).toISOString().split('T')[0];
-  const d = await pedir(`/axis/sales?database=${DB}&from=${desde}&to=${hoy.toISOString().split('T')[0]}&limit=100000`);
+/**
+ * Los precios, sacados de las ventas.
+ *
+ * Ventra NO da precio en la ficha del producto: `/axis/products` devuelve id, sku,
+ * name, category, billingEntity, unit, description, weightKg, isActive y las fechas, y
+ * nada más. El único sitio donde hay un precio es lo que se cobró en una venta.
+ *
+ * Por eso esto mira dos ventanas:
+ *
+ *   - **90 días**: el precio vigente. Es el que vale.
+ *   - **3 años**: sólo para los que no aparecen en los 90 días. Un producto que no se
+ *     vende desde hace año y medio salía como «sin precio», que se lee como que no
+ *     tiene ninguno. Y sí lo tiene: el DETERGENTE KAPITAL INDUSTRIAL se vendió el
+ *     06/02/2025 a 18. Enseñar ese número diciendo de cuándo es sirve; esconderlo, no.
+ *
+ * Devuelve `Map<codigo, { precio, fecha, viejo }>`.
+ */
+async function preciosPorVenta(dias) {
+  const hoy = new Date().toISOString().split('T')[0];
+  const desde = new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString().split('T')[0];
+  const d = await pedir(`/axis/sales?database=${DB}&from=${desde}&to=${hoy}&limit=100000`);
   const precios = new Map();
 
-  // De más viejo a más nuevo, así el último que se escribe es el precio vigente.
+  // De más viejo a más nuevo, así el último que se escribe es el que queda.
   for (const f of (d.rows || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)))) {
     const precio = Number(f.priceOut);
 
-    if (f.productCode && Number.isFinite(precio) && precio > 0) precios.set(f.productCode, precio);
+    if (f.productCode && Number.isFinite(precio) && precio > 0) {
+      precios.set(f.productCode, { precio, fecha: String(f.date).slice(0, 10) });
+    }
+  }
+
+  return precios;
+}
+
+let cacheViejos = { cuando: 0, mapa: new Map() };
+
+async function preciosRecientes() {
+  const vigentes = await preciosPorVenta(90);
+  const precios = new Map();
+
+  for (const [codigo, v] of vigentes) precios.set(codigo, { ...v, viejo: false });
+
+  /*
+   * La segunda consulta se guarda seis horas.
+   *
+   * Es historia: lo que se vendió hace dos años no cambia. Pedir tres años de ventas en
+   * cada refresco sería castigar a Ventra por un dato que no se mueve.
+   */
+  try {
+    if (Date.now() - cacheViejos.cuando > 6 * 3600 * 1000) {
+      cacheViejos = { cuando: Date.now(), mapa: await preciosPorVenta(1095) };
+    }
+
+    for (const [codigo, v] of cacheViejos.mapa) {
+      if (!precios.has(codigo)) precios.set(codigo, { ...v, viejo: true });
+    }
+  } catch {
+    // Si la consulta larga falla, se sigue con los precios vigentes: es un extra.
   }
 
   return precios;
@@ -103,7 +151,7 @@ export async function productos() {
       ID: p.sku,
       Code: p.sku,
       Name: p.name,
-      PriceOut1: precios.get(p.sku) ?? null,
+      PriceOut1: precios.get(p.sku)?.precio ?? null,
       Measure1: p.unit ?? null,
       Measure2: null,
     }));
@@ -190,7 +238,9 @@ export async function almacen() {
         ID: it.productCode,
         Code: it.productCode,
         Name: it.productName,
-        PriceOut1: precios.get(it.productCode) ?? null,
+        PriceOut1: precios.get(it.productCode)?.precio ?? null,
+        precioFecha: precios.get(it.productCode)?.fecha ?? null,
+        precioViejo: precios.get(it.productCode)?.viejo ?? false,
         stock,
       });
     }
