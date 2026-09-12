@@ -2,14 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import mysql from 'mysql2/promise';
-import fs from 'fs';
+import {
+  listarAsignaciones, crearAsignacion, borrarAsignacion,
+  listarCobros, marcarCobro, desmarcarCobro, cobrosManualesSet,
+} from './almacen.js';
 
 const app = express();
 app.use(cors());
 app.use(compression());
 app.use(express.json());
-
-const ASIGNACIONES_FILE = 'asignaciones.json';
 
 try {
   process.loadEnvFile();
@@ -61,35 +62,6 @@ function invalidate(prefix) {
   }
 }
 
-function loadAsignaciones() {
-  if (fs.existsSync(ASIGNACIONES_FILE)) {
-    const data = fs.readFileSync(ASIGNACIONES_FILE, 'utf-8');
-    return JSON.parse(data);
-  }
-  return [];
-}
-
-function saveAsignaciones(data) {
-  fs.writeFileSync(ASIGNACIONES_FILE, JSON.stringify(data, null, 2), 'utf-8');
-}
-
-const COBROS_FILE = 'cobros.json';
-
-function loadCobros() {
-  if (fs.existsSync(COBROS_FILE)) {
-    const data = fs.readFileSync(COBROS_FILE, 'utf-8');
-    return JSON.parse(data);
-  }
-  return [];
-}
-
-function saveCobros(data) {
-  fs.writeFileSync(COBROS_FILE, JSON.stringify(data, null, 2), 'utf-8');
-}
-
-function cobrosManualesSet() {
-  return new Set(loadCobros().map(c => String(c.folio || '').toUpperCase()));
-}
 
 function normalizeVendedorName(note) {
   if (!note) return null;
@@ -284,46 +256,47 @@ app.get('/api/productos', async (req, res) => {
   }
 });
 
-function getAsignaciones() {
-  const asignaciones = loadAsignaciones();
-  const filtered = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
-  filtered.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
-  return filtered;
+/**
+ * Las asignaciones de un mes.
+ *
+ * El mes viene de fuera, y si no viene se usa el actual. Antes estaba escrito a mano
+ * (`startsWith('2026-09')`): en octubre la pantalla se habría quedado vacía y nadie habría
+ * sabido por qué.
+ */
+function mesActual() {
+  return new Date().toISOString().slice(0, 7);
 }
 
-// GET /api/asignaciones
-app.get('/api/asignaciones', (req, res) => {
-  res.json({ asignaciones: getAsignaciones() });
+function getAsignaciones(mes) {
+  return listarAsignaciones(mes || mesActual());
+}
+
+// GET /api/asignaciones — acepta ?mes=AAAA-MM; sin él, el mes en curso
+app.get('/api/asignaciones', async (req, res, next) => {
+  try {
+    res.json({ asignaciones: await getAsignaciones(req.query.mes) });
+  } catch (e) { next(e); }
 });
 
 // POST /api/asignaciones
-app.post('/api/asignaciones', (req, res) => {
-  const { vendedor, producto_id, producto_nombre, cantidad, fecha } = req.body;
-  const asignaciones = loadAsignaciones();
-  const nueva = {
-    id: asignaciones.length + 1,
-    vendedor,
-    producto_id,
-    producto_nombre,
-    cantidad,
-    fecha: fecha || new Date().toISOString().split('T')[0]
-  };
-  asignaciones.push(nueva);
-  saveAsignaciones(asignaciones);
-  res.json({ success: true, id: nueva.id });
+app.post('/api/asignaciones', async (req, res, next) => {
+  try {
+    const { vendedor, producto_id, producto_nombre, cantidad, fecha } = req.body;
+    const nueva = await crearAsignacion({ vendedor, producto_id, producto_nombre, cantidad, fecha });
+
+    res.json({ success: true, id: nueva.id, asignacion: nueva });
+  } catch (e) { next(e); }
 });
 
 // DELETE /api/asignaciones/:id
-app.delete('/api/asignaciones/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  let asignaciones = loadAsignaciones();
-  const originalLen = asignaciones.length;
-  asignaciones = asignaciones.filter(a => a.id !== id);
-  if (asignaciones.length === originalLen) {
-    return res.status(404).json({ success: false, error: 'Asignación no encontrada' });
-  }
-  saveAsignaciones(asignaciones);
-  res.json({ success: true });
+app.delete('/api/asignaciones/:id', async (req, res, next) => {
+  try {
+    const borrada = await borrarAsignacion(req.params.id);
+
+    if (!borrada) return res.status(404).json({ success: false, error: 'Asignación no encontrada' });
+
+    res.json({ success: true });
+  } catch (e) { next(e); }
 });
 
 // GET /api/ventas — desde MariaDB (operaciones despachadas Sign=-1)
@@ -392,8 +365,8 @@ async function loadDespachos() {
 }
 
 async function computeResumen() {
-  const asignaciones = loadAsignaciones();
-  const asignSep = asignaciones.filter(a => a.fecha && a.fecha.startsWith('2026-09'));
+  // El mes en curso, no uno escrito a mano: ver `getAsignaciones`.
+  const asignSep = await listarAsignaciones(mesActual());
 
   // Group assignments by vendedor + producto (mapear a GoodID real)
   const goodsIndex = await loadGoodsIndex();
@@ -424,7 +397,7 @@ async function computeResumen() {
   // Los que ya están cobrados (pedido_cobrado=completo o marcado manual) van a "cobrado",
   // no a "en_proceso" (que queda solo para los que de verdad no han pagado).
   const orders = await fetchAllOrders('2026-09-01', '2026-09-30');
-  const cobrosManuales = cobrosManualesSet();
+  const cobrosManuales = await cobrosManualesSet();
   const procesoMap = {};
   const cobradoMap = {};
   for (const o of orders) {
@@ -543,7 +516,7 @@ async function computeDetalleProceso() {
   const { foliosDespachados } = await loadDespachos();
 
   const result = {};
-  const cobrosManuales = cobrosManualesSet();
+  const cobrosManuales = await cobrosManualesSet();
   for (const o of orders) {
     if (o.estado !== 'en_proceso') continue;
     if (!o.folio) continue;
@@ -601,29 +574,38 @@ app.get('/api/init-db', (req, res) => {
 });
 
 // POST /api/cobros — marca un pedido como cobrado manualmente
-app.post('/api/cobros', (req, res) => {
-  const { folio } = req.body;
-  if (!folio) return res.status(400).json({ success: false, error: 'folio requerido' });
-  const f = String(folio).toUpperCase();
-  const cobros = loadCobros();
-  if (!cobros.some(c => String(c.folio).toUpperCase() === f)) {
-    cobros.push({ folio: f, fecha: new Date().toISOString().split('T')[0] });
-    saveCobros(cobros);
-  }
-  res.json({ success: true });
+app.post('/api/cobros', async (req, res, next) => {
+  try {
+    const { folio } = req.body;
+
+    if (!folio) return res.status(400).json({ success: false, error: 'folio requerido' });
+
+    // Idempotente: marcarlo dos veces deja una sola marca. Ver `almacen.marcarCobro`.
+    await marcarCobro(folio);
+    res.json({ success: true });
+  } catch (e) { next(e); }
 });
 
 // DELETE /api/cobros/:folio — desmarca un pedido manualmente marcado
-app.delete('/api/cobros/:folio', (req, res) => {
-  const f = String(req.params.folio || '').toUpperCase();
-  let cobros = loadCobros();
-  const originalLen = cobros.length;
-  cobros = cobros.filter(c => String(c.folio).toUpperCase() !== f);
-  if (cobros.length === originalLen) {
-    return res.status(404).json({ success: false, error: 'No encontrado' });
-  }
-  saveCobros(cobros);
-  res.json({ success: true });
+app.delete('/api/cobros/:folio', async (req, res, next) => {
+  try {
+    const quitado = await desmarcarCobro(req.params.folio || '');
+
+    if (!quitado) return res.status(404).json({ success: false, error: 'No encontrado' });
+
+    res.json({ success: true });
+  } catch (e) { next(e); }
+});
+
+/**
+ * El último recurso: cualquier fallo no atrapado contesta 500 con su motivo.
+ *
+ * Sin esto, un error dentro de un `async` deja la petición colgada hasta que vence el
+ * tiempo del navegador, y en la pantalla se ve un spinner eterno en vez de un error.
+ */
+app.use((err, _req, res, _next) => {
+  console.error('[asignaciones]', err);
+  res.status(500).json({ success: false, error: err?.message || 'error interno' });
 });
 
 const PORT = process.env.PORT || 4000;
