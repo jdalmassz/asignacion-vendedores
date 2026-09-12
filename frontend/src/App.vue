@@ -249,8 +249,18 @@ function nextMonth() {
   else calMonth.value++
 }
 
-// Mes actual para filtrar
-const mesActual = 'Septiembre 2026'
+/**
+ * El mes que se está mirando, calculado — no escrito a mano.
+ *
+ * Estaba puesto `'Septiembre 2026'` como texto fijo: el 1 de octubre la cabecera habría
+ * seguido diciendo septiembre mientras los datos eran de octubre, y nadie lo habría
+ * notado hasta cuadrar algo. Es el mismo fallo que tenía el servidor y que ya se arregló
+ * allí.
+ *
+ * Sale de `mesEnCurso()`, que va en hora de Cuba, así que cambia cuando cambia el mes
+ * aquí y no cuando cambia en Londres.
+ */
+const mesActual = computed(() => nombreDelMes(mesEnCurso()))
 
 onMounted(async () => {
   document.addEventListener('click', (e) => {
@@ -1143,12 +1153,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
             <span v-else><AppIcon name="x" :size="16" /> Cancelar</span>
           </button>
           <!--
-            Se queda el botón, y al lado CUÁNDO se actualizó.
-            La caché sirve lo guardado mientras refresca por detrás, así que lo que se ve
-            puede ser de hace un minuto. Decirlo es la diferencia entre un dato con fecha
-            y un dato que parece de ahora y no lo es.
+            La frescura va PEGADA al botón de actualizar, en una sola pieza.
+            Suelta entre los dos botones quedaba apretada y sin alinear, como si se
+            hubiera caído ahí. Aquí se lee como lo que es: el estado de ese botón.
           -->
-          <span v-if="haceCuanto" class="actualizado" :title="`Calculado el ${actualizado}`">
+          <span v-if="haceCuanto" class="frescura" :title="`Calculado el ${actualizado}`">
+            <span class="frescura-punto" aria-hidden="true"></span>
             {{ haceCuanto }}
           </span>
           <button class="btn btn-ghost ref-btn" @click="cargarDatos" title="Actualizar datos">
@@ -4566,19 +4576,42 @@ body {
   cursor: default;
 }
 
-/* Cuándo se calculó lo que se está viendo. Discreto: informa, no compite. */
-.actualizado {
-  font-size: 11.5px;
-  color: rgba(255, 255, 255, 0.75);
+/*
+ * Cuándo se calculó lo que se está viendo.
+ *
+ * Chapa, no texto suelto: el fondo translúcido la ata visualmente al botón de actualizar
+ * que tiene al lado, y el punto verde dice de un vistazo que esto está vivo. Informa sin
+ * competir con «Nueva Asignación», que es la acción de verdad de la cabecera.
+ */
+.frescura {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  height: 40px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
 }
 
+.frescura-punto {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success-light);
+  flex: none;
+}
+
 @media (max-width: 640px) {
-  /* En el móvil la cabecera ya va justa; esto cabe pero sin apretar los botones. */
-  .actualizado {
-    flex: 1 1 100%;
+  /* En el móvil la cabecera ya va apretada: la chapa baja a su propia línea, centrada. */
+  .frescura {
     order: 3;
-    text-align: center;
+    flex: 1 1 100%;
+    justify-content: center;
+    height: 32px;
   }
 }
 
