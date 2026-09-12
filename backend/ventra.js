@@ -45,12 +45,12 @@ const TIPO_VENTA = 2;
 
 class VentraNoDisponible extends Error {}
 
-async function pedir(ruta) {
+async function pedir(ruta, ms = 30000) {
   if (!TOKEN) throw new VentraNoDisponible('falta VENTRA_API_TOKEN');
 
   const r = await fetch(`${BASE}${ruta}`, {
     headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json' },
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(ms),
   });
 
   if (!r.ok) throw new VentraNoDisponible(`Ventra ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -86,25 +86,76 @@ async function pedir(ruta) {
  *
  * Devuelve `Map<codigo, { precio, fecha, viejo }>`.
  */
-async function preciosPorVenta(dias) {
-  const hoy = new Date().toISOString().split('T')[0];
-  const desde = new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString().split('T')[0];
-  const d = await pedir(`/axis/sales?database=${DB}&from=${desde}&to=${hoy}&limit=100000`);
-  const precios = new Map();
+async function ventasEntre(desde, hasta, ms = 30000) {
+  const d = await pedir(`/axis/sales?database=${DB}&from=${desde}&to=${hasta}&limit=100000`, ms);
 
-  // De más viejo a más nuevo, así el último que se escribe es el que queda.
-  for (const f of (d.rows || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)))) {
+  return d.rows || [];
+}
+
+/** Se queda con el precio de la venta MÁS NUEVA de cada producto. */
+function quedarseConElUltimo(filas, mapa) {
+  for (const f of filas.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)))) {
     const precio = Number(f.priceOut);
 
     if (f.productCode && Number.isFinite(precio) && precio > 0) {
-      precios.set(f.productCode, { precio, fecha: String(f.date).slice(0, 10) });
+      mapa.set(f.productCode, { precio, fecha: String(f.date).slice(0, 10) });
     }
   }
 
-  return precios;
+  return mapa;
 }
 
-let cacheViejos = { cuando: 0, mapa: new Map() };
+function haceDias(dias) {
+  return new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString().split('T')[0];
+}
+
+async function preciosPorVenta(dias) {
+  return quedarseConElUltimo(
+    await ventasEntre(haceDias(dias), new Date().toISOString().split('T')[0]),
+    new Map(),
+  );
+}
+
+/**
+ * El histórico de precios, que se llena POR DETRÁS.
+ *
+ * Tres años de ventas de golpe no se pueden pedir: 90 días ya tardan 11 segundos y
+ * devuelven 6.700 filas, y la consulta de tres años revienta por tiempo. Así que va
+ * partida en tramos de seis meses, uno detrás de otro, y **fuera de la petición**: el
+ * almacén se sirve con lo que haya y el histórico aparece cuando termina de llenarse,
+ * un minuto después del arranque. Nadie espera por esto.
+ */
+const TRAMOS = [180, 360, 540, 720, 900, 1095];
+let cacheViejos = { cuando: 0, mapa: new Map(), llenando: false };
+
+async function llenarHistorico() {
+  if (cacheViejos.llenando) return;
+  if (Date.now() - cacheViejos.cuando < 6 * 3600 * 1000 && cacheViejos.mapa.size) return;
+
+  cacheViejos.llenando = true;
+
+  try {
+    const mapa = new Map();
+
+    // De lo más viejo a lo más nuevo, para que el último precio escrito sea el reciente.
+    for (let i = TRAMOS.length - 1; i >= 0; i--) {
+      const hasta = i === 0 ? new Date().toISOString().split('T')[0] : haceDias(TRAMOS[i - 1]);
+
+      try {
+        quedarseConElUltimo(await ventasEntre(haceDias(TRAMOS[i]), hasta, 60000), mapa);
+      } catch (e) {
+        // Un tramo que falla no tira los demás: se pierde ese trozo de historia y ya.
+        console.warn(`[ventra] tramo de precios ${TRAMOS[i]}d falló: ${e.message}`);
+      }
+    }
+
+    cacheViejos = { cuando: Date.now(), mapa, llenando: false };
+    console.log(`[ventra] histórico de precios: ${mapa.size} productos`);
+  } catch (e) {
+    cacheViejos.llenando = false;
+    console.warn(`[ventra] no se pudo llenar el histórico: ${e.message}`);
+  }
+}
 
 async function preciosRecientes() {
   const vigentes = await preciosPorVenta(90);
@@ -112,22 +163,12 @@ async function preciosRecientes() {
 
   for (const [codigo, v] of vigentes) precios.set(codigo, { ...v, viejo: false });
 
-  /*
-   * La segunda consulta se guarda seis horas.
-   *
-   * Es historia: lo que se vendió hace dos años no cambia. Pedir tres años de ventas en
-   * cada refresco sería castigar a Ventra por un dato que no se mueve.
-   */
-  try {
-    if (Date.now() - cacheViejos.cuando > 6 * 3600 * 1000) {
-      cacheViejos = { cuando: Date.now(), mapa: await preciosPorVenta(1095) };
-    }
+  // Se dispara y NO se espera: si todavía no está, esta vuelta sale sin histórico y la
+  // siguiente ya lo trae.
+  llenarHistorico();
 
-    for (const [codigo, v] of cacheViejos.mapa) {
-      if (!precios.has(codigo)) precios.set(codigo, { ...v, viejo: true });
-    }
-  } catch {
-    // Si la consulta larga falla, se sigue con los precios vigentes: es un extra.
+  for (const [codigo, v] of cacheViejos.mapa) {
+    if (!precios.has(codigo)) precios.set(codigo, { ...v, viejo: true });
   }
 
   return precios;
