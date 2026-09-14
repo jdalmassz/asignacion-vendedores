@@ -727,26 +727,25 @@ async function computeResumen() {
   /*
    * VARIAS FILAS para el mismo vendedor+producto no se SUMAN a ciegas.
    *
-   * Cuando una segunda asignación nace arrastrando lo que de la primera no salió
-   * (ALEXANDER: 912 en la primera, despachó 873 y los 39 pasaron a la segunda, que
-   * quedó en 951), sumar las dos cantidades contaba los 39 DOS veces: 912+951=1863
-   * cuando lo real es lo que alcanzó a despachar de la primera más la nueva:
-   * 873+951=1824.
+   * La segunda ola se calculó para ECUALIZAR: lo que cada uno vendió en la primera
+   * más lo que se le asigna en la segunda da la misma meta para todos. ALEXANDER
+   * vendió 873 de la primera (912) y la segunda le quedó en 951: 873+951=1824, lo
+   * mismo que MAYLEN (912+912) o GEORLIS (982+842). Sumar las dos cantidades de ola
+   * (912+951=1863) contaba dos veces lo que ya traía la segunda.
    *
-   * La regla: cada ola (menos la última, la vigente) se recorta a lo despachado ANTES
-   * de que naciera la ola siguiente. No al total del mes: lo despachado después de que
-   * naciera la segunda ola ya cuenta dentro de la segunda, y recortar con el total
-   * volvía a inflar la primera (ALEXANDER lleva 1594 en el mes, pero de la primera
-   * ola solo salieron 873; los demás salieron de la segunda).
+   * La regla: cada ola cuenta lo despachado DENTRO DE SU LAPSO — desde que nació
+   * (su fecha) hasta que nació la siguiente (su día de nacimiento es el último día
+   * de la anterior: los 153 del 09-12 son de la ola 1, la 2ª nació ese mismo día
+   * después). Sin capar contra la cantidad de la ola: quien vendió más que la ola
+   * en el lapso (ANDY 933) también cuenta. Sólo la ÚLTIMA ola, la vigente, entra
+   * completa.
    */
   const asignMap = {};
   for (const key in filasPorClave) {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
     const despachosDia = despachosPorFecha[key] || {};
 
-    // Cuánto despachó CADA ola en su propio lapso: desde que nació (su fecha) hasta
-    // que nació la siguiente (incluida, su día de nacimiento es el último día de la
-    // anterior: los 153 del 09-12 son de la ola 1, la 2ª nació ese mismo día después).
+    // Cuánto despachó cada ola en su propio lapso.
     const despachadoDe = (desde, hasta) => {
       let total = 0;
       if (!desde) return total;
@@ -763,9 +762,7 @@ async function computeResumen() {
         asignado += filas[i].cantidad;
         continue;
       }
-      const lapso = despachadoDe(filas[i].fecha, filas[i + 1].fecha);
-      const tomado = Math.min(filas[i].cantidad, lapso);
-      asignado += tomado;
+      asignado += despachadoDe(filas[i].fecha, filas[i + 1].fecha);
     }
     asignMap[key] = asignado;
   }
