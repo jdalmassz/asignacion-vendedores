@@ -724,22 +724,20 @@ async function computeResumen() {
   /*
    * VARIAS FILAS para el mismo vendedor+producto no se SUMAN a ciegas.
    *
-   * Cuando una segunda asignación nace arrastrando lo que de la primera no salió
-   * cuando lo real es lo que alcanzó a despachar de la primera más la nueva:
+   * La segunda ola se calculó para ECUALIZAR: lo que cada uno vendió en la primera
    *
-   * La regla: cada ola (menos la última, la vigente) se recorta a lo despachado ANTES
-   * de que naciera la ola siguiente. No al total del mes: lo despachado después de que
-   * naciera la segunda ola ya cuenta dentro de la segunda, y recortar con el total
-   * ola solo salieron 873; los demás salieron de la segunda).
+   * La regla: cada ola cuenta lo despachado DENTRO DE SU LAPSO — desde que nació
+   * (su fecha) hasta que nació la siguiente (su día de nacimiento es el último día
+   * de la anterior: los 153 del 09-12 son de la ola 1, la 2ª nació ese mismo día
+   * después). Sin capar contra la cantidad de la ola: quien vendió más que la ola
+   * completa.
    */
   const asignMap = {};
   for (const key in filasPorClave) {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
     const despachosDia = despachosPorFecha[key] || {};
 
-    // Cuánto despachó CADA ola en su propio lapso: desde que nació (su fecha) hasta
-    // que nació la siguiente (incluida, su día de nacimiento es el último día de la
-    // anterior: los 153 del 09-12 son de la ola 1, la 2ª nació ese mismo día después).
+    // Cuánto despachó cada ola en su propio lapso.
     const despachadoDe = (desde, hasta) => {
       let total = 0;
       if (!desde) return total;
@@ -756,9 +754,7 @@ async function computeResumen() {
         asignado += filas[i].cantidad;
         continue;
       }
-      const lapso = despachadoDe(filas[i].fecha, filas[i + 1].fecha);
-      const tomado = Math.min(filas[i].cantidad, lapso);
-      asignado += tomado;
+      asignado += despachadoDe(filas[i].fecha, filas[i + 1].fecha);
     }
     asignMap[key] = asignado;
   }
