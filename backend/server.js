@@ -743,18 +743,19 @@ async function computeResumen() {
   for (const key in filasPorClave) {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
     const despachosDia = despachosPorFecha[key] || {};
-    const dias = Object.entries(despachosDia).sort((a, b) => a[0].localeCompare(b[0]));
 
-    // Cuánto llevaba despachado ANTES de cada ola (fecha de esa ola exclusiva).
-    const acumuladoAntesDe = (fecha) => {
+    // Cuánto despachó CADA ola en su propio lapso: desde que nació (su fecha) hasta
+    // que nació la siguiente (incluida, su día de nacimiento es el último día de la
+    // anterior: los 153 del 09-12 son de la ola 1, la 2ª nació ese mismo día después).
+    const despachadoDe = (desde, hasta) => {
       let total = 0;
-      for (const [dia, cantidad] of dias) {
-        if (dia < (fecha || '')) total += cantidad;
+      if (!desde) return total;
+      for (const [dia, cantidad] of Object.entries(despachosDia)) {
+        if (dia >= desde && dia <= (hasta || '')) total += cantidad;
       }
       return total;
     };
 
-    let yaTomado = 0;
     let asignado = 0;
     for (let i = 0; i < filas.length; i++) {
       const ultima = i === filas.length - 1;
@@ -762,12 +763,9 @@ async function computeResumen() {
         asignado += filas[i].cantidad;
         continue;
       }
-      // La ola i vale hasta donde se había despachado cuando nació la ola siguiente.
-      const corte = filas[i + 1].fecha;
-      const porCubrir = Math.max(0, acumuladoAntesDe(corte) - yaTomado);
-      const tomado = Math.min(filas[i].cantidad, porCubrir);
+      const lapso = despachadoDe(filas[i].fecha, filas[i + 1].fecha);
+      const tomado = Math.min(filas[i].cantidad, lapso);
       asignado += tomado;
-      yaTomado += tomado;
     }
     asignMap[key] = asignado;
   }
