@@ -621,6 +621,7 @@ async function loadDespachos() {
     }
 
     const despachosMap = {};    // vendedor|GoodID -> packs facturados por Ventra
+    const despachosPorFecha = {}; // vendedor|GoodID -> { 'aaaa-mm-dd': packs } para recortar cada ola
     const cambiadoMap = {};     // de eso, lo salido de un pedido que cambió
     const sinPedidoMap = {};    // de eso, lo que no tiene pedido detrás
     const pedidoMap = {};       // lo que se PIDIÓ, para comparar. No entra en la barra.
@@ -642,6 +643,12 @@ async function loadDespachos() {
 
       // LA FUENTE: lo que Ventra facturó.
       sumar(despachosMap, clave, row.TotalVendido);
+
+      const fechaDespacho = row.Date ? String(row.Date).slice(0, 10) : null;
+      if (fechaDespacho) {
+        if (!despachosPorFecha[clave]) despachosPorFecha[clave] = {};
+        sumar(despachosPorFecha[clave], fechaDespacho, row.TotalVendido);
+      }
 
       const pedido = folio ? pedidoPorFolio.get(folio) : null;
       const conFactura = pedido
@@ -680,6 +687,7 @@ async function loadDespachos() {
      */
     return {
       despachosMap,
+      despachosPorFecha,
       pedidoMap,
       cambiadoMap,
       sinPedidoMap,
@@ -713,7 +721,7 @@ async function computeResumen() {
   }
 
   // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
-  const { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, folios } = await loadDespachos();
+  const { despachosMap, despachosPorFecha, pedidoMap, cambiadoMap, sinPedidoMap, folios } = await loadDespachos();
   const foliosDespachados = new Set(folios);
 
   /*
@@ -722,16 +730,31 @@ async function computeResumen() {
    * Cuando una segunda asignación nace arrastrando lo que de la primera no salió
    * (ALEXANDER: 912 en la primera, despachó 873 y los 39 pasaron a la segunda, que
    * quedó en 951), sumar las dos cantidades contaba los 39 DOS veces: 912+951=1863
-   * cuando lo real es lo que alcanzó a despachar más la nueva: 873+951=1824.
+   * cuando lo real es lo que alcanzó a despachar de la primera más la nueva:
+   * 873+951=1824.
    *
-   * La regla: las asignaciones anteriores se recortan a lo que se despachó de verdad
-   * (lo que no salió ya está dentro de la siguiente), y la ÚLTIMA —la vigente, la de
-   * fecha mayor— cuenta completa.
+   * La regla: cada ola (menos la última, la vigente) se recorta a lo despachado ANTES
+   * de que naciera la ola siguiente. No al total del mes: lo despachado después de que
+   * naciera la segunda ola ya cuenta dentro de la segunda, y recortar con el total
+   * volvía a inflar la primera (ALEXANDER lleva 1594 en el mes, pero de la primera
+   * ola solo salieron 873; los demás salieron de la segunda).
    */
   const asignMap = {};
   for (const key in filasPorClave) {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
-    let porCubrir = despachosMap[key] || 0;
+    const despachosDia = despachosPorFecha[key] || {};
+    const dias = Object.entries(despachosDia).sort((a, b) => a[0].localeCompare(b[0]));
+
+    // Cuánto llevaba despachado ANTES de cada ola (fecha de esa ola exclusiva).
+    const acumuladoAntesDe = (fecha) => {
+      let total = 0;
+      for (const [dia, cantidad] of dias) {
+        if (dia < (fecha || '')) total += cantidad;
+      }
+      return total;
+    };
+
+    let yaTomado = 0;
     let asignado = 0;
     for (let i = 0; i < filas.length; i++) {
       const ultima = i === filas.length - 1;
@@ -739,9 +762,12 @@ async function computeResumen() {
         asignado += filas[i].cantidad;
         continue;
       }
+      // La ola i vale hasta donde se había despachado cuando nació la ola siguiente.
+      const corte = filas[i + 1].fecha;
+      const porCubrir = Math.max(0, acumuladoAntesDe(corte) - yaTomado);
       const tomado = Math.min(filas[i].cantidad, porCubrir);
       asignado += tomado;
-      porCubrir = Math.max(0, porCubrir - tomado);
+      yaTomado += tomado;
     }
     asignMap[key] = asignado;
   }
