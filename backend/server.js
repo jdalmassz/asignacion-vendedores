@@ -694,29 +694,57 @@ async function computeResumen() {
 
   // Group assignments by vendedor + producto (mapear a GoodID real)
   const goodsIndex = await loadGoodsIndex();
-  const asignMap = {};
   const asignInfo = {};
+  const filasPorClave = {};
   for (const a of asignSep) {
     const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
     const goodId = findGoodIDForAsign(a, goodsIndex);
     if (!goodId) continue;
     const g = goodsIndex.byId.get(goodId);
     const key = `${vendedorNorm}|${goodId}`;
-    if (!asignMap[key]) {
-      asignMap[key] = 0;
-      asignInfo[key] = {
-        vendedor: vendedorNorm,
-        goodId,
-        producto_id: g ? canonCode(g) : String(a.producto_id || a.producto_nombre || goodId),
-        producto_nombre: g ? g.Name : a.producto_nombre
-      };
-    }
-    asignMap[key] += a.cantidad;
+    if (!filasPorClave[key]) filasPorClave[key] = [];
+    filasPorClave[key].push({ cantidad: a.cantidad, fecha: a.fecha });
+    asignInfo[key] = {
+      vendedor: vendedorNorm,
+      goodId,
+      producto_id: g ? canonCode(g) : String(a.producto_id || a.producto_nombre || goodId),
+      producto_nombre: g ? g.Name : a.producto_nombre
+    };
   }
 
   // Despachos REALES desde MariaDB (Sign=-1) en el mes, por vendedor + GoodID
   const { despachosMap, pedidoMap, cambiadoMap, sinPedidoMap, folios } = await loadDespachos();
   const foliosDespachados = new Set(folios);
+
+  /*
+   * VARIAS FILAS para el mismo vendedor+producto no se SUMAN a ciegas.
+   *
+   * Cuando una segunda asignación nace arrastrando lo que de la primera no salió
+   * (ALEXANDER: 912 en la primera, despachó 873 y los 39 pasaron a la segunda, que
+   * quedó en 951), sumar las dos cantidades contaba los 39 DOS veces: 912+951=1863
+   * cuando lo real es lo que alcanzó a despachar más la nueva: 873+951=1824.
+   *
+   * La regla: las asignaciones anteriores se recortan a lo que se despachó de verdad
+   * (lo que no salió ya está dentro de la siguiente), y la ÚLTIMA —la vigente, la de
+   * fecha mayor— cuenta completa.
+   */
+  const asignMap = {};
+  for (const key in filasPorClave) {
+    const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+    let porCubrir = despachosMap[key] || 0;
+    let asignado = 0;
+    for (let i = 0; i < filas.length; i++) {
+      const ultima = i === filas.length - 1;
+      if (ultima) {
+        asignado += filas[i].cantidad;
+        continue;
+      }
+      const tomado = Math.min(filas[i].cantidad, porCubrir);
+      asignado += tomado;
+      porCubrir = Math.max(0, porCubrir - tomado);
+    }
+    asignMap[key] = asignado;
+  }
 
   /**
    * Lo que todavía no ha salido del almacén, y de dónde sale lo que sí salió.
