@@ -622,7 +622,7 @@ function inicialesDe(nombre) {
 
 /** Lo de un vendedor, sumado, para poder comparar vendedores sin leer sus filas. */
 function totalesDe(item) {
-  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0, sin_pedido: 0, cerrado_sin_factura: 0 }
+  const t = { asignado: 0, en_proceso: 0, cambiado: 0, completada: 0, vendido: 0, exceso: 0, pendiente: 0, cerrado_sin_factura: 0 }
   for (const p of item.productos) {
     for (const k in t) t[k] += p[k] || 0
   }
@@ -1376,7 +1376,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                       v-if="tramosDe(prod).sinTocar"
                       class="marca m-libre"
                       title="Asignado que todavía nadie ha pedido"
-                    >Sin pedir <b>{{ tramosDe(prod).sinTocar }}</b></span>
+                    >Pendiente <b>{{ tramosDe(prod).sinTocar }}</b></span>
                   </p>
 
                 </li>
@@ -1393,6 +1393,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               <footer class="vendedor-pie">
                 <span><b>{{ totalesDe(item).asignado }}</b> asignados</span>
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
+                <span class="pie-pendiente">
+                  <b>{{ totalesDe(item).pendiente }}</b> pendientes
+                </span>
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
                   <b>{{ totalesDe(item).exceso }}</b> vendidos de más
                 </span>
@@ -3445,6 +3448,7 @@ body {
 }
 
 .pie-despachado b { color: var(--success); }
+.pie-pendiente b { color: var(--purple); }
 
 .pie-proceso b    { color: var(--warning); }
 
