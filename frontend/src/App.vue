@@ -1147,7 +1147,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
         <div class="header-title">
           <span class="logo"><AppIcon name="box" :size="28" /></span>
           <div>
-            <h1 class="teste-despliegue">Asignación de Productos (ACTUALIZADO)</h1>
+            <h1>Asignación de Productos a Vendedores</h1>
             <p class="subtitle">{{ mesActual }}</p>
           </div>
         </div>
