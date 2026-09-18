@@ -1883,18 +1883,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                 <dt>Despachado <small>facturas de Ventra</small></dt>
                 <dd class="c-verde">{{ detalleDe.prod.completada }}</dd>
               </div>
-              <div v-if="detalleDe.prod.pedido">
-                <dt>Lo que pidieron <small>según PEDIDO</small></dt>
-                <dd>{{ detalleDe.prod.pedido }}</dd>
-              </div>
-              <div v-if="detalleDe.prod.cambiado">
-                <dt>Salió de facturas que cambiaron</dt>
-                <dd class="c-morado">{{ detalleDe.prod.cambiado }}</dd>
-              </div>
-              <div v-if="detalleDe.prod.sin_pedido">
-                <dt>Salió sin pedido detrás</dt>
-                <dd class="c-ambar">{{ detalleDe.prod.sin_pedido }}</dd>
-              </div>
               <div v-if="detalleDe.prod.en_proceso">
                 <dt>En proceso <small>pedido y sin facturar</small></dt>
                 <dd class="c-ambar">{{ detalleDe.prod.en_proceso }}</dd>
