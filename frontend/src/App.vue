@@ -1397,6 +1397,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               <footer class="vendedor-pie">
                 <span><b>{{ totalesDe(item).asignado }}</b> asignados</span>
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
+                <span class="pie-proceso"><b>{{ totalesDe(item).en_proceso }}</b> en proceso</span>
                 <span v-if="totalesDe(item).pendiente > 0" class="pie-pendiente">Pendientes <b>{{ totalesDe(item).pendiente }}</b></span>
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
                   <b>{{ totalesDe(item).exceso }}</b> vendidos de más
