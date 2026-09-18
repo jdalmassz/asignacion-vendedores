@@ -1393,8 +1393,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
               <footer class="vendedor-pie">
                 <span><b>{{ totalesDe(item).asignado }}</b> asignados</span>
                 <span class="pie-despachado"><b>{{ totalesDe(item).completada }}</b> despachados</span>
-                <span class="pie-pendiente">
-                  <b>{{ totalesDe(item).pendiente }}</b> pendientes
+                <span class="pie-pendiente-destacado">
+                  PENDIENTES: <b class="valor-gigante">{{ totalesDe(item).pendiente }}</b>
                 </span>
                 <span v-if="totalesDe(item).exceso" class="pie-exceso">
                   <b>{{ totalesDe(item).exceso }}</b> vendidos de más
@@ -3448,7 +3448,8 @@ body {
 }
 
 .pie-despachado b { color: var(--success); }
-.pie-pendiente b { color: var(--purple); }
+.pie-pendiente-destacado { font-size: 1.2rem; color: var(--purple); font-weight: bold; margin-left: 10px; }
+.valor-gigante { font-size: 1.6rem; display: inline-block; }
 
 .pie-proceso b    { color: var(--warning); }
 
