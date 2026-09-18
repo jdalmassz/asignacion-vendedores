@@ -694,10 +694,14 @@ function tramosDe(p) {
 
 /** El avance de un vendedor sobre lo suyo, para el número grande de su cabecera. */
 function avanceDe(item) {
-  const t = totalesDe(item)
-  if (!t.asignado) return 0
-  // Sin tope: un 112 % dice que se despachó más de lo asignado, y eso hay que verlo.
-  return Math.round((t.completada / t.asignado) * 100)
+  const asignadoTotal = totalesDe(item).asignado
+  if (!asignadoTotal) return 0
+
+  // Sumamos solo lo que cuenta para la meta: el mínimo entre lo despachado y lo asignado.
+  // Así el "exceso" no infla el porcentaje y no hay falsos 100%.
+  const completadoReal = item.productos.reduce((sum, p) => sum + Math.min(p.completada || 0, p.asignado || 0), 0)
+
+  return Math.round((completadoReal / asignadoTotal) * 100)
 }
 
 /**
