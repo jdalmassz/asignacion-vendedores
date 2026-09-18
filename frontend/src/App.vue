@@ -701,7 +701,7 @@ function avanceDe(item) {
   // Así el "exceso" no infla el porcentaje y no hay falsos 100%.
   const completadoReal = item.productos.reduce((sum, p) => sum + Math.min(p.completada || 0, p.asignado || 0), 0)
 
-  return Math.round((completadoReal / asignadoTotal) * 100)
+  return Math.floor((completadoReal / asignadoTotal) * 100)
 }
 
 /**
