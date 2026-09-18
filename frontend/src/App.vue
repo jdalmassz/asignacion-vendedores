@@ -1143,7 +1143,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
         <div class="header-title">
           <span class="logo"><AppIcon name="box" :size="28" /></span>
           <div>
-            <h1>Asignación de Productos a Vendedores</h1>
+            <h1 class="teste-despliegue">Asignación de Productos (ACTUALIZADO)</h1>
             <p class="subtitle">{{ mesActual }}</p>
           </div>
         </div>
@@ -1373,10 +1373,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', teclaDetalle))
                       :title="`Vendió ${prod.completada} contra ${prod.asignado} asignados`"
                     >Vendió de más <b>{{ tramosDe(prod).exceso }}</b></span>
                     <span
-                      v-if="tramosDe(prod).sinTocar"
+                      v-if="prod.pendiente"
                       class="marca m-libre"
-                      title="Asignado que todavía nadie ha pedido"
-                    >Pendiente <b>{{ tramosDe(prod).sinTocar }}</b></span>
+                      title="Asignado que todavía no ha sido despachado"
+                    >Pendiente <b>{{ prod.pendiente }}</b></span>
                   </p>
 
                 </li>
