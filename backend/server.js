@@ -707,16 +707,14 @@ async function computeResumen() {
   for (const a of asignSep) {
     const vendedorNorm = normalizeVendedorName('V-' + a.vendedor) || a.vendedor;
     const goodId = findGoodIDForAsign(a, goodsIndex);
-    if (!goodId) continue;
-    const g = goodsIndex.byId.get(goodId);
-    const key = `${vendedorNorm}|${goodId}`;
+    const key = goodId ? `${vendedorNorm}|${goodId}` : `${vendedorNorm}|${a.producto_id || a.producto_nombre}`;
     if (!filasPorClave[key]) filasPorClave[key] = [];
     filasPorClave[key].push({ cantidad: a.cantidad, fecha: a.fecha });
     asignInfo[key] = {
       vendedor: vendedorNorm,
       goodId,
-      producto_id: g ? canonCode(g) : String(a.producto_id || a.producto_nombre || goodId),
-      producto_nombre: g ? g.Name : a.producto_nombre
+      producto_id: goodId ? (goodsIndex.byId.get(goodId) ? canonCode(goodsIndex.byId.get(goodId)) : a.producto_id) : String(a.producto_id || a.producto_nombre),
+      producto_nombre: goodId ? (goodsIndex.byId.get(goodId) ? goodsIndex.byId.get(goodId).Name : a.producto_nombre) : a.producto_nombre
     };
   }
 
