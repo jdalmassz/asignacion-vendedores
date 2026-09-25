@@ -5,7 +5,7 @@
 | | Qué es | Puerto |
 |---|---|---|
 | `backend/` | Express 5. Lee productos y ventas de MySQL, pide pedidos a la API de PEDIDO, y **guarda lo suyo en MongoDB** | 4000 |
-| `frontend/` | Vue + Vite, servido por nginx, que además reenvía `/api` al backend | 80 |
+| `frontend/` | Next.js con salida estática (`output: 'export'`), servido por nginx, que además reenvía `/api` al backend | 80 |
 
 ## Dónde se guardan los datos
 
@@ -83,8 +83,10 @@ cd backend  && npm install && npm run dev     # http://localhost:4000
 cd frontend && npm install && npm run dev     # http://localhost:8093
 ```
 
-El frontend llama a `/api` y Vite lo reenvía al backend, igual que nginx en el servidor:
-así el código es el mismo en los dos sitios y no hay que acordarse de cambiar nada al subir.
+El frontend llama a `/api` y quien lo reenvía al backend es `next dev` en el portátil y
+nginx en el servidor: así el código es el mismo en los dos sitios y no hay que acordarse
+de cambiar nada al subir. El HTML sale construido en `frontend/out/`, que es lo que la
+imagen copia a `/usr/share/nginx/html`.
 
 ## Lo que se arregló al montarlo
 

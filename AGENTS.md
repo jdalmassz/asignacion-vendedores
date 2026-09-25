@@ -28,7 +28,7 @@ Toda la información de este proyecto sale de una base de datos de producción y
 
 - Leer y consultar la BD con `SELECT` (solo lectura) para entender o validar.
 - Leer los archivos de datos.
-- Modificar el código de la aplicación (`backend/server.js`, `frontend/src/**`, etc.).
+- Modificar el código de la aplicación (`backend/server.js`, `frontend/app/**`, `frontend/components/**`, `frontend/lib/**`, etc.).
 - Crear scripts temporales de consulta SOLO con `SELECT`, y borrarlos después.
 
 ### Antes de actuar
