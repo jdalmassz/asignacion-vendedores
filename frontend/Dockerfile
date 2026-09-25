@@ -1,19 +1,21 @@
-# El frontend: se construye con Vite y lo sirve nginx.
+# El frontend: se construye con Next.js —que genera HTML estático— y lo sirve nginx.
 FROM node:22-alpine AS build
 
 WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
 COPY package*.json ./
 RUN npm ci
 COPY . .
-# La dirección de la API se incrusta al construir: Vite sustituye `import.meta.env` en el
-# empaquetado, así que no vale ponerla al arrancar. Por defecto `/api`, relativa, que es
-# la que reenvía nginx.
-ARG VITE_API_URL=/api
-ENV VITE_API_URL=$VITE_API_URL
+# La dirección de la API se incrusta al construir: Next sustituye `process.env.NEXT_PUBLIC_*`
+# en el empaquetado, así que no vale ponerla al arrancar. Por defecto `/api`, relativa, que
+# es la que reenvía nginx.
+ARG NEXT_PUBLIC_API_URL=/api
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
 FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
+# `output: 'export'` en next.config.mjs: la salida es `out/`, no hay servidor Node detrás.
+COPY --from=build /app/out /usr/share/nginx/html
 
 # Como plantilla, no como configuración: la imagen de nginx sustituye las variables de
 # /etc/nginx/templates al arrancar y deja el resultado en conf.d.
