@@ -6,7 +6,9 @@ import AppIcon from './AppIcon'
 import Transition from './Transition'
 import { API_URL } from '../lib/api'
 import {
+  afinesDe,
   avanceDe,
+  hoyEnCuba,
   importeDe,
   inicialesDe,
   mesEnCurso,
@@ -38,6 +40,13 @@ export default function App() {
   // Estado de los datos
   const [vendedores, setVendedores] = useState([])
   const [resumen, setResumen] = useState([])
+  /**
+   * Líneas de pedidos cuyo nombre NO encaja con ningún producto de Ventra.
+   *
+   * El servidor no las suma en ninguna parte, así que sin este aviso no hay forma de
+   * enterarse: la fila no existe y el pedido se ve «por despachar» en ninguna parte.
+   */
+  const [sinCasar, setSinCasar] = useState([])
   const [ventas, setVentas] = useState([])
   const [asignaciones, setAsignaciones] = useState([])
   const [almacen, setAlmacen] = useState([])
@@ -83,6 +92,27 @@ export default function App() {
   const [calYear, setCalYear] = useState(new Date().getFullYear())
   const [rangoTmpDesde, setRangoTmpDesde] = useState('')
   const [rangoTmpHasta, setRangoTmpHasta] = useState('')
+
+  /**
+   * Lo que se acaba de hacer, enseñado en pantalla.
+   *
+   * Guardar una asignación cerraba el formulario y punto: si el servidor contestaba
+   * bien no había forma de saberlo, y si contestaba mal sólo un `alert`, que en el
+   * móvil sale encima de todo y se cierra sin leerse. Esto es un aviso que se va solo,
+   * dice QUÉ se guardó y CUÁNTAS veces, y no interrumpe.
+   */
+  const [nota, setNota] = useState(null)
+  /** Cuánto lleva de la tanda de peticiones de `crearAsignacion`, o `null` si no hay. */
+  const [guardando, setGuardando] = useState(null)
+  const relojNota = useRef(null)
+  /**
+   * Corta el doble envío de verdad.
+   *
+   * `guardando` es estado y tarda un pintado en existir: dos Enter seguidos en el
+   * mismo fotograma lo ven todavía en `null` y lanzarían la tanda dos veces. Un ref
+   * se pone en el mismo instante.
+   */
+  const enviandoRef = useRef(false)
 
   const [cargandoAlmacen, setCargandoAlmacen] = useState(false)
   const [actualizado, setActualizado] = useState(null)
@@ -165,6 +195,7 @@ export default function App() {
     try {
       const r = await axios.get(`${API_URL}/resumen`)
       setResumen(r.data.resumen)
+      setSinCasar(r.data.sin_casar || [])
     } catch (e) {
       console.error('Error al cargar resumen:', e)
     }
@@ -204,6 +235,7 @@ export default function App() {
       const listaResumen = rDashboard.data?.resumen || []
       const listaVentas = rDashboard.data?.ventas || []
       setResumen(listaResumen)
+      setSinCasar(rDashboard.data?.sin_casar || [])
       setVentas(listaVentas)
       /*
        * El panel siempre trae las del mes EN CURSO. Si estás mirando otro mes, esto te
@@ -264,9 +296,10 @@ export default function App() {
    */
   useEffect(() => {
     setMesCabecera(nombreDelMes(mesEnCurso()))
-    const f = new Date()
-    setFechaHoy(`${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`)
-    setNuevaAsignacion((a) => (a.fecha ? a : { ...a, fecha: new Date().toISOString().split('T')[0] }))
+    // Hoy EN CUBA, no en UTC: `toISOString()` a las 20:30 de La Habana ya da mañana.
+    const hoy = hoyEnCuba()
+    setFechaHoy(hoy)
+    setNuevaAsignacion((a) => (a.fecha ? a : { ...a, fecha: hoy }))
   }, [])
 
   /** «hace 2 minutos». Se recalcula solo porque `ahora` avanza cada 30 segundos. */
@@ -686,6 +719,20 @@ export default function App() {
     [detalleDe, detalleProceso]
   )
 
+  /**
+   * Las líneas sin casar que son de ESTE producto y de ESTE vendedor.
+   *
+   * El cajón dice «No queda ningún pedido por despachar»: si a la vez hay líneas
+   * con su nombre que no se pudieron asociar a nada, decirlo ahí es lo que separa
+   * «no hay nada» de «hay algo que no estoy mirando».
+   */
+  const sinCasarDeEste = useMemo(() => {
+    if (!detalleDe) return []
+    return afinesDe(sinCasar, detalleDe.producto_nombre).filter((l) =>
+      (l.vendedores || []).includes(detalleDe.vendedor)
+    )
+  }, [sinCasar, detalleDe])
+
   const paginasDetalle = useMemo(
     () => Math.max(Math.ceil(pedidosDelDetalle.length / POR_PAGINA_DETALLE), 1),
     [pedidosDelDetalle]
@@ -849,40 +896,109 @@ export default function App() {
     }
   }
 
+  /**
+   * Enseñar un aviso y olvidarse de él.
+   *
+   * Sólo uno a la vez: si llega otro, el anterior se sustituye y su reloj se cancela,
+   * que es justo lo que pasa al guardar una tanda —éxito y luego el aviso del
+   * producto— y no se quiere tener dos pegados encima.
+   */
+  function avisar(tipo, titulo, texto) {
+    if (relojNota.current) clearTimeout(relojNota.current)
+    const id = Date.now()
+    setNota({ id, tipo, titulo, texto })
+    // El error se queda más: es el que hay que leer entero.
+    relojNota.current = setTimeout(
+      () => setNota((n) => (n && n.id === id ? null : n)),
+      tipo === 'ok' ? 6000 : 12000
+    )
+  }
+
+  useEffect(() => () => clearTimeout(relojNota.current), [])
+
+  /**
+   * Guardar la tanda.
+   *
+   * Un POST por vendedor, y UNO MAL NO SE LLEVA POR DELANTE A LOS DEMÁS: antes el
+   * `catch` estaba fuera del bucle, así que el primer fallo dejaba el resto sin
+   * guardar y la única pista era un `alert` que casi nadie llegaba a leer. Ahora cada
+   * vendedor se apunta a su sitio y al final se dice lo que salió y lo que no.
+   *
+   * Si falla alguna, el formulario NO se cierra: quedan seleccionados sólo los que
+   * fallaron, para repetir y guardarlos sin tener que volver a marcarlos.
+   */
   async function crearAsignacion() {
+    if (guardando || enviandoRef.current) return
+
     if (vendedoresSeleccionados.length === 0 || !nuevaAsignacion.producto || !nuevaAsignacion.cantidad) {
-      alert('Por favor seleccione al menos un vendedor, un producto y una cantidad')
+      avisar('error', 'Faltan datos', 'Elige al menos un vendedor, un producto y una cantidad.')
       return
     }
 
     const producto = productosFiltrados.find((p) => p.id == nuevaAsignacion.producto)
-    if (!producto) return
+    if (!producto) {
+      // Silencio total: el botón estaba activo y al pulsarlo no pasaba NADA, porque el
+      // producto ya no estaba en la lista (stock a cero) y esto se iba sin más.
+      avisar('error', 'Producto no encontrado', 'Vuelve a elegir el producto en el desplegable.')
+      return
+    }
 
+    const total = vendedoresSeleccionados.length
+    const guardadas = []
+    const fallidas = []
+    let aviso = null
+
+    setGuardando({ hechas: 0, total })
+    enviandoRef.current = true
     try {
-      let aviso = null
+      let hechas = 0
       for (const vendedor of vendedoresSeleccionados) {
-        const r = await axios.post(`${API_URL}/asignaciones`, {
-          vendedor,
-          producto_id: nuevaAsignacion.producto,
-          producto_nombre: producto.name,
-          cantidad: parseFloat(nuevaAsignacion.cantidad),
-          fecha: nuevaAsignacion.fecha,
-        })
-        // El servidor avisa si el producto no casa con ninguno de Ventra: la asignación
-        // se guarda pero NO va a salir en el resumen. Es el mismo aviso para todos los
-        // vendedores del lote, así que con enseñarlo una vez basta.
-        if (r.data?.aviso) aviso = r.data.aviso
+        try {
+          const r = await axios.post(`${API_URL}/asignaciones`, {
+            vendedor,
+            producto_id: nuevaAsignacion.producto,
+            producto_nombre: producto.name,
+            cantidad: parseFloat(nuevaAsignacion.cantidad),
+            fecha: nuevaAsignacion.fecha,
+          })
+          // El servidor avisa si el producto no casa con ninguno de Ventra: la asignación
+          // se guarda pero NO va a salir en el resumen. Es el mismo aviso para todos los
+          // vendedores del lote, así que con enseñarlo una vez basta.
+          if (r.data?.aviso) aviso = r.data.aviso
+          guardadas.push(vendedor)
+        } catch (e) {
+          fallidas.push({ vendedor, motivo: e.response?.data?.error || e.message })
+        }
+        hechas++
+        setGuardando({ hechas, total })
       }
 
-      setVendedoresSeleccionados([])
-      setNuevaAsignacion({ producto: '', cantidad: 0, fecha: new Date().toISOString().split('T')[0] })
-      setShowForm(false)
+      const detalle = `${producto.name} · ${nuevaAsignacion.cantidad} c/u · ${nuevaAsignacion.fecha}`
 
-      await cargarResumen()
-      await cargarAsignaciones()
-      if (aviso) alert(aviso)
-    } catch (e) {
-      alert('Error al crear asignación: ' + (e.response?.data?.error || e.message))
+      if (fallidas.length === 0) {
+        setVendedoresSeleccionados([])
+        setNuevaAsignacion({ producto: '', cantidad: 0, fecha: fechaHoy || hoyEnCuba() })
+        setShowForm(false)
+        avisar(aviso ? 'aviso' : 'ok', `${guardadas.length} de ${total} asignaciones guardadas`, aviso ? `${detalle}. ${aviso}` : detalle)
+      } else if (guardadas.length === 0) {
+        avisar('error', 'No se guardó ninguna asignación', fallidas[0].motivo)
+      } else {
+        // Se quedan SÓLO las que fallaron: pulsar otra vez las reintenta.
+        setVendedoresSeleccionados(fallidas.map((f) => f.vendedor))
+        avisar(
+          'aviso',
+          `Sólo ${guardadas.length} de ${total} guardadas`,
+          `${fallidas.length} fallaron (${fallidas[0].vendedor}: ${fallidas[0].motivo}). Siguen marcadas: vuelve a pulsar para reintentarlas.`
+        )
+      }
+
+      if (guardadas.length > 0) {
+        await cargarResumen()
+        await cargarAsignaciones()
+      }
+    } finally {
+      enviandoRef.current = false
+      setGuardando(null)
     }
   }
 
@@ -893,8 +1009,9 @@ export default function App() {
       await axios.delete(`${API_URL}/asignaciones/${id}`)
       await cargarResumen()
       await cargarAsignaciones()
+      avisar('ok', 'Asignación eliminada', 'Ya no cuenta para este mes.')
     } catch (e) {
-      alert('Error al eliminar asignación: ' + (e.response?.data?.error || e.message))
+      avisar('error', 'No se pudo eliminar', e.response?.data?.error || e.message)
     }
   }
 
@@ -1005,6 +1122,41 @@ export default function App() {
           <button onClick={() => setError(null)}>
             <AppIcon name="x" size={16} />
           </button>
+        </div>
+      )}
+
+      {/*
+        * Lo que no se puede contar, dicho en voz alta.
+        *
+        * El servidor tira estas líneas porque su nombre no encaja con ningún producto
+        * de Ventra: no suman en ninguna fila ni salen en el detalle, y el único síntoma
+        * es que «No queda ningún pedido por despachar» con pedidos encima. Es el aviso
+        * de siempre —no doy por hecho que el usuario se fije—, así que va arriba, fijo,
+        * en ámbar, sin botón de cerrar.
+        */}
+      {sinCasar.length > 0 && (
+        <div className="sin-casar" role="status">
+          <span className="sin-casar-icono">
+            <AppIcon name="alert" size={16} />
+          </span>
+          <div>
+            <strong>
+              {sinCasar.length} {sinCasar.length === 1 ? 'línea de pedido no casa' : 'líneas de pedidos no casan'}{' '}
+              con ningún producto de Ventra
+            </strong>
+            <span> — no aparecen en ninguna fila ni en el detalle:</span>
+            <ul>
+              {sinCasar.slice(0, 5).map((s) => (
+                <li key={s.producto}>
+                  {s.producto}{' '}
+                  <em>
+                    · {s.pedidos} {s.pedidos === 1 ? 'pedido' : 'pedidos'} · {s.packs} packs
+                  </em>
+                </li>
+              ))}
+              {sinCasar.length > 5 && <li>…y {sinCasar.length - 5} más</li>}
+            </ul>
+          </div>
         </div>
       )}
 
@@ -1922,10 +2074,19 @@ export default function App() {
                   <button
                     type="submit"
                     className="btn btn-success btn-block"
-                    disabled={vendedoresSeleccionados.length === 0}
+                    disabled={vendedoresSeleccionados.length === 0 || !!guardando}
                   >
-                    <AppIcon name="save" size={16} /> Guardar Asignación ({vendedoresSeleccionados.length} vendedor
-                    {vendedoresSeleccionados.length !== 1 ? 'es' : ''})
+                    {guardando ? (
+                      <>
+                        <span className="spinner spinner-chico" aria-hidden="true"></span>
+                        Guardando {guardando.hechas}/{guardando.total}…
+                      </>
+                    ) : (
+                      <>
+                        <AppIcon name="save" size={16} /> Guardar Asignación ({vendedoresSeleccionados.length}{' '}
+                        vendedor{vendedoresSeleccionados.length !== 1 ? 'es' : ''})
+                      </>
+                    )}
                   </button>
                 </form>
               </div>
@@ -2001,7 +2162,28 @@ export default function App() {
                     </button>
                   </div>
                 ) : pedidosDelDetalle.length === 0 ? (
-                  <p className="detalle-aviso">No queda ningún pedido por despachar de este producto</p>
+                  <>
+                    <p className="detalle-aviso">No queda ningún pedido por despachar de este producto</p>
+                    {sinCasarDeEste.length > 0 && (
+                      <div className="detalle-sincasar" role="status">
+                        <AppIcon name="alert" size={15} />
+                        <div>
+                          <strong>Pero sí hay líneas suyas que no se pudieron asociar:</strong> su nombre no encaja con
+                          ningún producto de Ventra, así que no se están contando en ningún sitio.
+                          <ul>
+                            {sinCasarDeEste.map((l) => (
+                              <li key={l.producto}>
+                                {l.producto}{' '}
+                                <em>
+                                  · {l.pedidos} {l.pedidos === 1 ? 'pedido' : 'pedidos'} · {l.packs} packs
+                                </em>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <>
                     <div className="detalle-titulo">Pedidos sin despachar ({pedidosDelDetalle.length})</div>
@@ -2088,6 +2270,26 @@ export default function App() {
           </div>
         )}
       </Transition>
+
+      {/*
+        El aviso de lo que se hizo. Fuera de las ventanas y con z-index por encima de
+        todas: tiene que verse también con el formulario abierto, que es justo cuando
+        más dudas quedan («¿se guardó?»).
+      */}
+      {nota && (
+        <div className={`nota nota-${nota.tipo}`} role="status" aria-live="polite">
+          <span className="nota-icono">
+            <AppIcon name={nota.tipo === 'ok' ? 'check' : 'alert'} size={18} />
+          </span>
+          <div className="nota-texto">
+            <strong>{nota.titulo}</strong>
+            {nota.texto && <span>{nota.texto}</span>}
+          </div>
+          <button type="button" className="nota-cerrar" aria-label="Cerrar aviso" onClick={() => setNota(null)}>
+            <AppIcon name="x" size={16} />
+          </button>
+        </div>
+      )}
 
     </div>
   )

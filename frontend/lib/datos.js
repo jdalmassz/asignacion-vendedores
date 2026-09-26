@@ -16,6 +16,23 @@ export function mesEnCurso() {
     .slice(0, 7)
 }
 
+/**
+ * El día de hoy EN CUBA, `AAAA-MM-DD`, igual que lo calcula el servidor.
+ *
+ * `new Date().toISOString().slice(0, 10)` es UTC: a las 20:30 de La Habana ya da
+ * mañana, y una asignación hecha a esas horas se guardaba con el día siguiente —el 1
+ * de mes, con el día del mes entrante— y no aparecía en la lista que se estaba mirando.
+ * Con `en-CA` el formato ya ES `AAAA-MM-DD` y el huso lo resuelve el propio navegador.
+ */
+export function hoyEnCuba() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Havana',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
 /** "2026-09" -> "Septiembre 2026". Un AAAA-MM no se lee, se descifra. */
 export function nombreDelMes(mes) {
   const [a, m] = String(mes || '').split('-')
@@ -155,4 +172,41 @@ export function nombreCortoVendedor(nombre) {
 /** Lo que lleva vendido un vendedor, para poder ordenarlos por eso en la lista. */
 export function importeDe(v) {
   return Object.values(v.productos).reduce((t, p) => t + p.total, 0)
+}
+
+const palabras = (s) =>
+  String(s || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+
+/** El volumen de un nombre en mililitros, si lo trae: «330», «1500». */
+const volumen = (ts) => ts.find((t) => /^\d{3,5}$/.test(t))
+
+/**
+ * De las líneas de pedidos que no casaron con ningún producto, las que sí parecen
+ * ser de ESTE producto.
+ *
+ * Sirve para decir «No queda ningún pedido por despachar **pero** estas tres líneas
+ * tienen tu nombre y no se pudieron asociar», que es la diferencia entre «no hay
+ * nada» y «hay algo que no estoy mirando».
+ *
+ * Dos palabras comunes de más de dos letras, y que si las dos miden midan lo mismo:
+ * «MALTA GUAJIRA 0.33L» es de «MALTA GUAJIRA 330 ML…», pero «MALTA GUAJIRA 1500»
+ * no lo es, y «ARROZ RIVIERA» no es «CERVEZA PARRANDA».
+ */
+export function afinesDe(lineas, nombreProducto) {
+  const propias = palabras(nombreProducto)
+  if (propias.length < 2) return []
+  return (lineas || []).filter((l) => {
+    const suyas = palabras(l.producto)
+    const comunes = new Set(suyas.filter((t) => t.length > 2 && propias.includes(t)))
+    if (comunes.size < 2) return false
+    const a = volumen(suyas)
+    const b = volumen(propias)
+    return !(a && b && a !== b)
+  })
 }

@@ -158,16 +158,69 @@ function normalizeVendedorName(note) {
   return name.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Lo que mide una palabra: mililitros, si es que mide algo.
+ *
+ * «0.33L» son 330 ml, «1.5L» son 1500. Sin pasar esto a enteros, «0.33» queda en
+ * «33» —o «33L» si la L va pegada— y ya no se parece a «330» de Ventra: el pedido
+ * no casaba con NADA y se caía del resumen sin decirlo.
+ */
+function cantidadEnMl(t) {
+  const decimal = t.match(/^(\d+)[.,](\d+)(?:ML|L)?$/);
+  if (decimal) {
+    const enteros = Number(decimal[1]);
+    // «0.33» → 330, «1.5» → 500, «1.25» → 250: la fracción se rellena a tres cifras.
+    const decimales = Number(decimal[2].padEnd(3, '0').slice(0, 3));
+    return String(enteros * 1000 + decimales);
+  }
+  const conUnidad = t.match(/^(\d+)(?:ML|L)$/);
+  if (conUnidad) return conUnidad[1];
+  return t;
+}
+
+/**
+ * El VOLUMEN de un producto en mililitros, o `null` si no lo trae.
+ *
+ * Sirve para el veto de `findGoodIDForAsign`: un «1.5L» nunca es un «0.33L», y
+ * ponerlos a competir por puntos es lo que hacía que pedidos de una marca
+ * aparecieran atribuidos a otra.
+ */
+function tamanoDe(tokens) {
+  for (const t of tokens) {
+    if (!/^\d{3,5}$/.test(t)) continue; // sólo enteros de 100 a 99999, no «44» ni «12»
+    const n = Number(t);
+    if (n >= 100 && n <= 100000) return n;
+  }
+  return null;
+}
+
+/**
+ * Los tokens con los que se compara CUALQUIER nombre de producto: un pedido de
+ * PEDIDO, el nombre de una asignación y la ficha de Ventra pasan por aquí, así que
+ * lo que se corte aquí se está cegando en toda la aplicación.
+ *
+ * Tres reglas:
+ *
+ *  1. El VOLUMEN pasa a mililitros enteros (`cantidadEnMl`).
+ *
+ *  2. Se quitan palabras de ENVASE y CATEGORÍA —cerveza, malta, botella, blister,
+ *     ML—, que están en los dos lados y sólo ensucian.
+ *
+ *  3. La MARCA se DEJA. GUAJIRA, PARRANDA y REGIO son justo lo que distingue un
+ *     «1.5L» de otro «1.5L». Antes se quitaban GUAJIRA y REGIO pero no PARRANDA:
+ *     «MALTA GUAJIRA 1500» quedaba en {1500} y empataba con «CERVEZA PARRANDA
+ *     1500», que iba primero, y los pedidos de una marca se atribuían a la otra.
+ */
 function normProdTokens(s) {
   if (!s) return [];
-  return s
+  return String(s)
     .toUpperCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/0\.5|0,5/g, ' 500 ')
-    .replace(/1\.5|1,5/g, ' 1500 ')
-    .replace(/[^A-Z0-9 ]/g, ' ')
+    // Se quedan el punto y la coma para que «0,33L» llegue entero a `cantidadEnMl`.
+    .replace(/[^A-Z0-9.,\s]/g, ' ')
     .split(/\s+/)
-    .filter(t => t.length > 1 && !/^(CERVEZA|MALTA|BOTELLA|BLISTER|REGIO|GUAJIRA)$/.test(t));
+    .map(cantidadEnMl)
+    .filter(t => t.length > 1 && !/^(CERVEZA|MALTA|BOTELLA|BLISTER|ML)$/.test(t));
 }
 
 function canonCode(g) {
@@ -184,7 +237,8 @@ function makeGoodsIndex(goods) {
     byId.set(g.ID, g);
     byCanon.set(canonCode(g).toUpperCase(), g);
     if (g.Code) byRawCode.set(String(g.Code).trim(), g);
-    tokensList.push({ id: g.ID, tokens: new Set(normProdTokens(g.Name)) });
+    const tokens = normProdTokens(g.Name);
+    tokensList.push({ id: g.ID, tokens: new Set(tokens), tam: tamanoDe(tokens) });
   }
   return { byCanon, byRawCode, byId, tokensList };
 }
@@ -200,19 +254,47 @@ async function loadGoodsIndex() {
   );
 }
 
+/**
+ * El producto de Ventra al que pertenece una línea, o `null` si no se puede saber.
+ *
+ * Dos reglas, y las dos vienen de líneas que se perdían sin avisar:
+ *
+ *  - VETO POR TAMAÑO: si los dos lados miden y miden distinto, no se compite.
+ *    «MALTA GUAJIRA 0.33L» contra «CERVEZA PARRANDA 1500» no puede ser.
+ *
+ *  - NO SE ADIVINA: con dos puntos basta, pero si empatan dos productos distintos
+ *    se devuelve `null` en vez de quedarse con el primero que pasó, que era como
+ *    acababan mezclándose GUAJIRA y PARRANDA —los dos eran «1500» con tres puntos
+ *    de empate—. Lo que queda en `null` se publica como «sin casar» en
+ *    `/api/resumen`, para que no se pierda en silencio.
+ *
+ * Un solo punto se acepta únicamente si es el candidato único: «0.33» contra un
+ * sólo producto de 330 ml no deja lugar a dudas.
+ */
 function findGoodIDForAsign(a, index) {
   const pid = String(a.producto_id || '').trim();
   const byCode = index.byRawCode.get(pid);
   if (byCode) return byCode.ID;
 
-  const aTokens = normProdTokens(a.producto_nombre + ' ' + a.producto_id);
-  let best = null, bestScore = 0;
+  // `Set`: el nombre y el código se cuentan una vez, no dos.
+  const aTokens = new Set(normProdTokens(a.producto_nombre + ' ' + a.producto_id));
+  if (!aTokens.size) return null;
+  const aTam = tamanoDe([...aTokens]);
+
+  const candidatos = [];
   for (const g of index.tokensList) {
+    if (aTam && g.tam && g.tam !== aTam) continue;
     let score = 0;
     for (const t of aTokens) if (g.tokens.has(t)) score++;
-    if (score > bestScore) { bestScore = score; best = g.id; }
+    if (score > 0) candidatos.push({ id: g.id, score });
   }
-  return bestScore >= 2 ? best : null;
+  if (!candidatos.length) return null;
+
+  candidatos.sort((x, y) => y.score - x.score);
+  if (candidatos.length === 1) return candidatos[0].id;
+  if (candidatos[0].score < 2) return null;
+  // Empate en lo más alto: no hay con qué desempatar, y se prefiere no casar.
+  return candidatos[0].score === candidatos[1].score ? null : candidatos[0].id;
 }
 
 function goodIdFromItem(it, index) {
@@ -792,6 +874,26 @@ async function computeResumen() {
   const procesoMap = {};
   const cerradoSinFacturaMap = {};
 
+  /*
+   * Lo que NO CASA con ningún producto de Ventra se publica en vez de tirarlo.
+   *
+   * Antes el `continue` de abajo era mudo: un pedido cuyo nombre no encajaba —«MALTA
+   * GUAJIRA 0.33L», con «0.33» quedando en «33»— no sumaba en ninguna fila y no dejaba
+   * rastro, y la pantalla decía «No queda ningún pedido por despachar» con el pedido
+   * ahí, delante. Se agrupa por nombre para que el aviso diga «MALTA GUAJIRA 0.33L ·
+   * 2 pedidos · 10 packs» y no una línea por cada pedido, y se anota el vendedor para
+   * que el cajón de detalle pueda enseñar SÓLO las de suya.
+   */
+  const sinCasar = new Map();
+  const anotarSinCasar = (it, vendedor) => {
+    const nombre = String(it.producto || it.codigo || '').trim() || '(sin nombre)';
+    const previo = sinCasar.get(nombre) || { producto: nombre, pedidos: 0, packs: 0, vendedores: new Set() };
+    previo.pedidos += 1;
+    previo.packs += it.packs || 0;
+    if (vendedor) previo.vendedores.add(vendedor);
+    sinCasar.set(nombre, previo);
+  };
+
   for (const o of orders) {
     if (o.estado === 'expirada') continue;
     if (!o.folio) continue;
@@ -815,7 +917,10 @@ async function computeResumen() {
 
     for (const it of (o.items || [])) {
       const goodId = goodIdFromItem(it, goodsIndex);
-      if (!goodId) continue;
+      if (!goodId) {
+        anotarSinCasar(it, vendedor);
+        continue;
+      }
 
       const key = `${vendedor}|${goodId}`;
       if (!asignInfo[key]) continue;
@@ -884,13 +989,18 @@ async function computeResumen() {
       pendiente: Math.max(0, asignado - dentroDeLoAsignado)
     });
   }
-  return resumen;
+  return {
+    filas: resumen,
+    // El `Set` no sobrevive a JSON: se vuelca a lista al salir.
+    sin_casar: [...sinCasar.values()].map((s) => ({ ...s, vendedores: [...s.vendedores] }))
+  };
 }
 
 // GET /api/resumen — asignaciones vs despachos reales (MariaDB) + pedidos en proceso (API)
 app.get('/api/resumen', async (req, res) => {
   try {
-    res.json({ resumen: await computeResumen() });
+    const { filas, sin_casar } = await computeResumen();
+    res.json({ resumen: filas, sin_casar });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1019,12 +1129,12 @@ app.get('/api/detalle-proceso', async (req, res) => {
 // GET /api/dashboard — resumen + ventas + asignaciones en UNA sola request
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const [resumen, ventas, asignaciones] = await Promise.all([
+    const [r, ventas, asignaciones] = await Promise.all([
       computeResumen(),
       computeVentas(),
       Promise.resolve(getAsignaciones())
     ]);
-    res.json({ resumen, ventas, asignaciones });
+    res.json({ resumen: r.filas, sin_casar: r.sin_casar, ventas, asignaciones });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1157,14 +1267,16 @@ async function vigilar() {
      * la huella porque el stock se mueve todo el rato y avisaría cada minuto sin que haya
      * pasado nada que mirar.
      */
-    const [resumen, ventas, asignaciones] = await Promise.all([
+    const [r, ventas, asignaciones] = await Promise.all([
       computeResumen(),
       computeVentas(),
       getAsignaciones(),
       computeAlmacen().catch(() => null),
       computeVendedores().catch(() => null),
     ]);
-    const huella = JSON.stringify([resumen, ventas, asignaciones]);
+    // `r` lleva también `sin_casar`: que una línea empiece a casar es un cambio que
+    // merece aviso aunque no cambie ninguna fila.
+    const huella = JSON.stringify([r, ventas, asignaciones]);
 
     if (huellaAnterior === null) {
       // La primera vuelta sólo toma la foto: avisar aquí sería avisar de nada.
