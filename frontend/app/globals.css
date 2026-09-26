@@ -328,6 +328,14 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
+/* El mismo giro dentro de un botón, del color del texto que lo rodea. */
+.spinner-chico {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+  border-top-color: currentColor;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -358,6 +366,146 @@ body {
   cursor: pointer;
   font-size: 18px;
   opacity: 0.8;
+}
+
+/*
+ * Líneas de pedidos que no casan con ningún producto.
+ *
+ * Ámbar y sin botón de cerrar: no es un error que se pueda descartar, es un hueco en
+ * los datos que se queda hasta que alguien arregle el nombre. Va con su lista dentro
+ * porque lo que hace falta ver es QUÉ nombres no casan, no que «hay algo mal».
+ */
+.sin-casar {
+  background: #fffbeb;
+  border-left: 4px solid var(--warning);
+  color: #92400e;
+  padding: 12px 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.sin-casar .sin-casar-icono {
+  flex-shrink: 0;
+  display: flex;
+  color: var(--warning);
+  margin-top: 2px;
+}
+
+.sin-casar ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.sin-casar li {
+  margin-bottom: 2px;
+}
+
+.sin-casar li em {
+  font-style: normal;
+  opacity: 0.75;
+}
+
+/*
+ * El aviso de lo que se acaba de hacer.
+ *
+ * Abajo y centrado, y POR ENCIMA DE TODO: las ventanas y los cajones están en
+ * z-index 200 y el velo de carga en 1000, y este sale justo cuando se guarda con el
+ * formulario todavía abierto —que es cuando más dudas quedan: «¿se guardó o no?»—.
+ * El color lo dice de un vistazo: verde guardado, ámbar guardado con reserva, rojo no
+ * se guardó.
+ *
+ * Centrado con `left/right: 0` y márgenes `auto`, no con `transform`: así `transform`
+ * queda libre para la animación de entrada y no hay que repetirla en el móvil.
+ */
+.nota {
+  position: fixed;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
+  max-width: min(520px, calc(100vw - 32px));
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius);
+  border-left: 4px solid var(--success);
+  box-shadow: var(--shadow-lg);
+  z-index: 1200;
+  animation: nota-entra 220ms ease-out;
+}
+
+.nota-aviso { border-left-color: var(--warning); }
+.nota-error { border-left-color: var(--danger); }
+
+.nota-icono {
+  display: flex;
+  align-items: center;
+  color: var(--success);
+  flex: none;
+  margin-top: 1px;
+}
+
+.nota-aviso .nota-icono { color: var(--warning); }
+.nota-error .nota-icono { color: var(--danger); }
+
+.nota-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nota-texto strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.nota-texto span {
+  font-size: 13px;
+  color: var(--text-light);
+  line-height: 1.4;
+  /* El motivo de un fallo es una frase larga: que se parta y no ensanche la caja. */
+  overflow-wrap: anywhere;
+}
+
+.nota-cerrar {
+  background: none;
+  border: none;
+  padding: 2px;
+  margin: -2px -4px 0 0;
+  color: var(--text-light);
+  cursor: pointer;
+  display: flex;
+  flex: none;
+}
+
+.nota-cerrar:hover {
+  color: var(--text);
+}
+
+@keyframes nota-entra {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 640px) {
+  /* El motivo de un fallo es una frase larga y la pantalla son 360 px: el aviso pasa
+     a ocupar el ancho entero, con un margen a cada lado, en vez de los 520 de
+     escritorio. */
+  .nota {
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-width: none;
+    bottom: max(16px, env(safe-area-inset-bottom));
+  }
 }
 
 /* Form Card */
@@ -1632,6 +1780,41 @@ body {
   font-size: 12px;
   color: var(--text-light);
   padding: 4px 0;
+}
+
+/*
+ * Dentro del cajón: «no queda nada» pero SÍ hay líneas con este nombre que no casaron.
+ *
+ * Sin esto el aviso de arriba suelta un montón de productos de todo el mes y no se ve
+ * cuáles son del que se está mirando. Va en ámbar y con la lista, que es lo que hace
+ * falta ver: el nombre exacto que no casa.
+ */
+.detalle-sincasar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fffbeb;
+  border-left: 3px solid var(--warning);
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.detalle-sincasar > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.detalle-sincasar ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+}
+
+.detalle-sincasar li em {
+  font-style: normal;
+  opacity: 0.75;
 }
 
 .detalle-titulo {
