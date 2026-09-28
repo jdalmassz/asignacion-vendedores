@@ -2070,6 +2070,34 @@ body {
   max-height: min(85vh, 760px);
 }
 
+/* El pie de guardado pone su propio relleno abajo, así que el del cuerpo sobra. */
+.hoja-ancha .hoja-cuerpo {
+  padding-bottom: 0;
+}
+
+/*
+ * «Guardar Asignación» se queda pegado al fondo de la hoja.
+ *
+ * En un móvil de 667 px el cajón mide 567 y el formulario —tres campos apilados
+ * y la lista de nueve vendedores— 623: «Guardar» quedaba 119 px por debajo del
+ * borde y había que meter el dedo en el ruedo para encontrarlo. Se entra tocando
+ * «Nueva Asignación» y se sale tocando «Guardar»: los dos tienen que verse sin
+ * mover nada. El cuerpo rueda por debajo y el pie no se mueve.
+ *
+ * Los márgenes negativos a los lados comen el relleno de `.hoja-cuerpo`, para
+ * que el fondo blanco llegue de borda a borda y lo que rueda por detrás no se
+ * asome por el filo del botón.
+ */
+.hoja-guardar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin: 14px -16px 0;
+  padding: 12px 16px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
 /* ==========================================================================
    EL FORMULARIO SALE DEL BOTÓN, NO DEL CENTRO
 
