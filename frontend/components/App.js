@@ -2071,23 +2071,32 @@ export default function App() {
                       ))}
                     </div>
                   </div>
-                  <button
-                    type="submit"
-                    className="btn btn-success btn-block"
-                    disabled={vendedoresSeleccionados.length === 0 || !!guardando}
-                  >
-                    {guardando ? (
-                      <>
-                        <span className="spinner spinner-chico" aria-hidden="true"></span>
-                        Guardando {guardando.hechas}/{guardando.total}…
-                      </>
-                    ) : (
-                      <>
-                        <AppIcon name="save" size={16} /> Guardar Asignación ({vendedoresSeleccionados.length}{' '}
-                        vendedor{vendedoresSeleccionados.length !== 1 ? 'es' : ''})
-                      </>
-                    )}
-                  </button>
+                  {/*
+                    El botón va en su propio pie, pegado abajo de la hoja y fuera del
+                    ruedo del formulario: en un móvil de 667 px los campos y la lista de
+                    vendedores medían más que el cajón y «Guardar» quedaba 119 px más
+                    abajo, fuera de pantalla. Se entra tocando «Nueva Asignación» y se
+                    sale tocando «Guardar»: los dos tienen que verse sin mover nada.
+                  */}
+                  <div className="hoja-guardar">
+                    <button
+                      type="submit"
+                      className="btn btn-success btn-block"
+                      disabled={vendedoresSeleccionados.length === 0 || !!guardando}
+                    >
+                      {guardando ? (
+                        <>
+                          <span className="spinner spinner-chico" aria-hidden="true"></span>
+                          Guardando {guardando.hechas}/{guardando.total}…
+                        </>
+                      ) : (
+                        <>
+                          <AppIcon name="save" size={16} /> Guardar Asignación ({vendedoresSeleccionados.length}{' '}
+                          vendedor{vendedoresSeleccionados.length !== 1 ? 'es' : ''})
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </form>
               </div>
             </div>
