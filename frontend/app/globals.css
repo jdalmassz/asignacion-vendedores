@@ -670,6 +670,36 @@ body {
   box-shadow: 0 1px 0 var(--border, #d1d5db);
 }
 
+/*
+ * La columna del producto se queda pegada a la izquierda.
+ *
+ * La tabla del almacén se desliza en horizontal —en el móvil siempre, en
+ * escritorio cuando hay muchos almacenes— y sin esto, al llegar a «PV
+ * CAMAGÜEY» la fila ya no dice de qué producto es: hay que volver atrás para
+ * mirarlo y perder el sitio.
+ *
+ * Los fondos van a pelo, no se heredan: una celda pegada tapa a las de al
+ * lado y si deja ver el hueco se ven los números desfilando por detrás.
+ */
+.table-almacen th:first-child,
+.table-almacen td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface, #fff);
+}
+
+.table-almacen thead th:first-child {
+  z-index: 4;
+  background: #eef2f6;
+}
+
+.table-almacen tbody tr:hover td:first-child {
+  /* La fila se aclara entera al pasar el ratón; la celda pegada, que tiene
+     fondo propio, se quedaría blanca en medio del renglón gris. */
+  background: #fafbfc;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -1459,12 +1489,17 @@ body {
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Las grandes van dentro de `.table-wrapper`, que ya rueda: se les pone un
-     mínimo para que no se compriman hasta pisarse las columnas. */
-  .data-table,
-  .table-almacen {
+  /* Las grandes van dentro de `.table-wrapper`, que ya rueda: se les pone el
+     mínimo A LA TABLA para que no se comprima hasta pisarse las columnas.
+     Ojo: `.table-almacen` es el ENVOLTORIO, no la tabla. Al ponerle aquí el
+     mínimo, en una pantalla de 366 px el envoltorio medía 520: se salía de la
+     tarjeta —que recorta con `overflow: hidden`— y no quedaba dónde deslizar.
+     «PV CAMAGÜEY» y «Total» no se llegaban a ver jamás. */
+  .data-table {
     min-width: 520px;
-  }  .card-header {
+  }
+
+  .card-header {
     flex-wrap: wrap;
     gap: 8px;
     padding: 14px 12px;
