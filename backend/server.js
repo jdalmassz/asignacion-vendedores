@@ -821,6 +821,8 @@ async function computeResumen() {
    * completa.
    */
   const asignMap = {};
+  /** El pendiente de la ola vigente, calculado aparte. Ver el bloque de abajo. */
+  const pendientePorOla = {};
   for (const key in filasPorClave) {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
     const despachosDia = despachosPorFecha[key] || {};
@@ -845,6 +847,48 @@ async function computeResumen() {
       asignado += despachadoDe(filas[i].fecha, filas[i + 1].fecha);
     }
     asignMap[key] = asignado;
+
+    /*
+     * PENDIENTE DE LA OLA VIGENTE: FIFO contra lo facturado desde su fecha.
+     *
+     * `asignado − despachado` deja la última ola intacta el día que nace. Las
+     * ventas de ese día se las lleva la ventana de la ola anterior —que es
+     * inclusiva por el final a propósito: «el día de nacimiento es el último día
+     * de la anterior»—, así que el 29 al mediodía los siete de MALTA 330
+     * enseñaban «Pendiente 70» aunque cuatro ya habían facturado sus 70.
+     *
+     * La realidad es de cola: lo que se factura DESDE la fecha de la ola nueva
+     * se carga primero contra lo que quedaba de las olas anteriores, y lo que
+     * sobra es de la ola nueva. GEORLIS cerró sus 1275 del 23 y hoy facturó
+     * 70: su ola de 70 está vendida. JEAN le quedaban 347 del 23 y facturó
+     * 340: esos 340 son de stock viejo y su ola de 70 sigue entera.
+     *
+     * Sólo cambia `pendiente`: `asignado`, `exceso` y la barra siguen con la
+     * cuenta de olas de siempre.
+     */
+    const hoy = hoyEnCuba();
+    const olaVigente = filas[filas.length - 1];
+    let stockViejo = 0;
+    for (let i = 0; i < filas.length - 1; i++) {
+      let consumido = 0;
+      // El stock viejo se mide AL EMPEZAR el día de la ola nueva: la era de la ola
+      // anterior se corta antes de ese día, y lo que se factura desde la ola nueva
+      // consume primero ese stock y luego la ola nueva.
+      for (const [dia, cantidad] of Object.entries(despachosDia)) {
+        if (dia >= filas[i].fecha && dia <= filas[i + 1].fecha && dia < olaVigente.fecha) {
+          consumido += cantidad;
+        }
+      }
+      stockViejo += Math.max(0, filas[i].cantidad - consumido);
+    }
+    let facturadoDesdeLaOla = 0;
+    for (const [dia, cantidad] of Object.entries(despachosDia)) {
+      if (dia >= olaVigente.fecha && dia <= hoy) facturadoDesdeLaOla += cantidad;
+    }
+    pendientePorOla[key] = Math.max(
+      0,
+      olaVigente.cantidad - Math.max(0, facturadoDesdeLaOla - stockViejo),
+    );
   }
 
   /**
@@ -943,8 +987,8 @@ async function computeResumen() {
    * Pasarse de lo asignado es justo lo que hay que ver, no lo que hay que recortar.
    * Ahora va el número real y aparte `exceso`, que es cuánto se pasó.
    *
-   * `pendiente` sí sigue mirando lo que cabe dentro de lo asignado: lo que falta por
-   * despachar no puede ser negativo porque alguien haya sacado de más.
+   * `pendiente` ya no sale de esta cuenta: es el de `pendientePorOla`, el FIFO de
+   * la ola vigente calculado en el bloque de arriba.
    */
   const resumen = [];
   for (const key in asignMap) {
@@ -953,9 +997,6 @@ async function computeResumen() {
     const clave = `${info.vendedor}|${info.goodId}`;
     const despachado = despachosMap[clave] || 0;
     const completada = despachado;
-    // Lo que cabe DENTRO de lo asignado: `pendiente` no puede volverse negativo porque
-    // alguien haya sacado de más.
-    const dentroDeLoAsignado = Math.min(despachado, asignado);
 
     /*
      * De lo que ya salió, cuánto se facturó DISTINTO de lo que se pidió, y cuánto salió
@@ -986,7 +1027,7 @@ async function computeResumen() {
       /** Cuánto se pasó de lo asignado. 0 cuando no se pasó. */
       exceso: Math.max(0, despachado - asignado),
       completada,
-      pendiente: Math.max(0, asignado - dentroDeLoAsignado)
+      pendiente: pendientePorOla[key]
     });
   }
   return {
