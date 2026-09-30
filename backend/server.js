@@ -802,15 +802,27 @@ async function computeResumen() {
   const foliosDespachados = new Set(folios);
 
   /*
-   * VARIAS FILAS para el mismo vendedor+producto no se SUMAN a ciegas.
+   * ASIGNADO = LO QUE SE LE DIO EN TOTAL: la suma de las cantidades de ola.
    *
-   * La segunda ola se calculó para ECUALIZAR: lo que cada uno vendió en la primera
+   * Antes era una ventana: cada ola contaba lo despachado DENTRO DE SU LAPSO
+   * —desde que nació hasta que nació la siguiente, con el día final incluido—
+   * y la última entraba completa. Eso se diseñó para ECUALIZAR la parranda: lo
+   * que cada uno vendió en la primera más la segunda ola daba la misma meta
    *
-   * La regla: cada ola cuenta lo despachado DENTRO DE SU LAPSO — desde que nació
-   * (su fecha) hasta que nació la siguiente (su día de nacimiento es el último día
-   * de la anterior: los 153 del 09-12 son de la ola 1, la 2ª nació ese mismo día
-   * después). Sin capar contra la cantidad de la ola: quien vendió más que la ola
-   * completa.
+   * Pero con dos olas en días distintos la ventana cuenta dos veces. La de
+   * MALTA: la ola del 23 corría hasta el 29 inclusive y ADEMÁS se sumaba la
+   * ventana + 70): con el almacén vacío la pantalla seguía diciendo «le falta».
+   * La ventana puede hasta PASAR lo que se le dio, y entonces la meta es
+   * inalcanzable por definición.
+   *
+   * La suma de cantidades es lo físicamente asignado, y con el pendiente de
+   * cola (bloque de abajo) se cumple la identidad que la pantalla promete en
+   * TODAS las filas —comprobado que nadie vende antes de su primera ola—:
+   *
+   *     pendiente = max(0, asignado − completada)
+   *
+   * 100% ⟺ pendiente 0 ⟺ no le queda nada. En parranda la meta deja de ser
+   * son un exceso de verdad, que antes la ventana disfrazaba de meta cumplida.
    */
   const asignMap = {};
   /** El pendiente de la ola vigente, calculado aparte. Ver el bloque de abajo. */
@@ -820,45 +832,27 @@ async function computeResumen() {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
     const despachosDia = despachosPorFecha[key] || {};
 
-    // Cuánto despachó cada ola en su propio lapso.
-    const despachadoDe = (desde, hasta) => {
-      let total = 0;
-      if (!desde) return total;
-      for (const [dia, cantidad] of Object.entries(despachosDia)) {
-        if (dia >= desde && dia <= (hasta || '')) total += cantidad;
-      }
-      return total;
-    };
-
-    let asignado = 0;
-    for (let i = 0; i < filas.length; i++) {
-      const ultima = i === filas.length - 1;
-      if (ultima) {
-        asignado += filas[i].cantidad;
-        continue;
-      }
-      asignado += despachadoDe(filas[i].fecha, filas[i + 1].fecha);
-    }
-    asignMap[key] = asignado;
+    asignMap[key] = filas.reduce((total, fila) => total + fila.cantidad, 0);
 
     /*
-     * PENDIENTE DE LA OLA VIGENTE: FIFO en una sola pasada.
+     * PENDIENTE: lo que le queda de LO RECIBIDO, en FIFO de una sola pasada.
      *
-     * `asignado − despachado` deja la última ola intacta el día que nace. Las
-     * ventas de ese día se las lleva la ventana de la ola anterior —que es
-     * inclusiva por el final a propósito: «el día de nacimiento es el último día
-     * de la anterior»—, así que el 29 al mediodía los siete de MALTA 330
-     * enseñaban «Pendiente 70» aunque cuatro ya habían facturado sus 70.
+     * Con la ventana vieja, las ventas del día que nace una ola se las llevaba
+     * la ventana de la anterior —inclusiva por el final a propósito—, así que
+     * el 29 al mediodía los siete de MALTA 330 enseñaban «Pendiente 70» aunque
+     * cuatro ya habían facturado sus 70.
      *
-     * La realidad es de cola: los días en orden consumen primero la ola más
-     * vieja que aún tenga stock, y lo que queda AL FINAL de la cola es de la
+     * Ahora la cuenta es de cola: los días en orden consumen primero la ola más
+     * vieja que aún tenga stock, y lo que queda AL FINAL de la cola es lo que le
      *
      * Una sola pasada y sin repartir la cuenta por olas: con tres olas, el día
-     * que nace la segunda cae en la ventana de la primera Y en la de la segunda,
-     * y sus ventas se descontarían dos veces. Aquí cada día consume una sola vez.
+     * que nace la segunda caería en la ventana de la primera Y en la de la
+     * segunda, y sus ventas se descontarían dos veces. Aquí cada día consume una
+     * sola vez.
      *
-     * Sólo cambia `pendiente`: `asignado`, `exceso` y la barra siguen con la
-     * cuenta de olas de siempre.
+     * Con `asignado` = suma de las olas (bloque de arriba) esto equivale
+     * exactamente a `max(0, asignado − completada)`: la barra, el exceso y el
+     * pendiente dicen lo mismo.
      */
     const cola = [];
     let o = 0;
