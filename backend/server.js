@@ -823,6 +823,7 @@ async function computeResumen() {
   const asignMap = {};
   /** El pendiente de la ola vigente, calculado aparte. Ver el bloque de abajo. */
   const pendientePorOla = {};
+  const hoy = hoyEnCuba();
   for (const key in filasPorClave) {
     const filas = filasPorClave[key].sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
     const despachosDia = despachosPorFecha[key] || {};
@@ -849,7 +850,7 @@ async function computeResumen() {
     asignMap[key] = asignado;
 
     /*
-     * PENDIENTE DE LA OLA VIGENTE: FIFO contra lo facturado desde su fecha.
+     * PENDIENTE DE LA OLA VIGENTE: FIFO en una sola pasada.
      *
      * `asignado − despachado` deja la última ola intacta el día que nace. Las
      * ventas de ese día se las lleva la ventana de la ola anterior —que es
@@ -857,38 +858,35 @@ async function computeResumen() {
      * de la anterior»—, así que el 29 al mediodía los siete de MALTA 330
      * enseñaban «Pendiente 70» aunque cuatro ya habían facturado sus 70.
      *
-     * La realidad es de cola: lo que se factura DESDE la fecha de la ola nueva
-     * se carga primero contra lo que quedaba de las olas anteriores, y lo que
-     * sobra es de la ola nueva. GEORLIS cerró sus 1275 del 23 y hoy facturó
-     * 70: su ola de 70 está vendida. JEAN le quedaban 347 del 23 y facturó
+     * La realidad es de cola: los días en orden consumen primero la ola más
+     * vieja que aún tenga stock, y lo que queda AL FINAL de la cola es de la
+     * ola vigente —ese resto es su pendiente. GEORLIS cerró sus 1275 del 23 y
+     * hoy facturó 70: le queda 0. JEAN le quedaban 347 del 23 y hoy facturó
      * 340: esos 340 son de stock viejo y su ola de 70 sigue entera.
+     *
+     * Una sola pasada y sin repartir la cuenta por olas: con tres olas, el día
+     * que nace la segunda cae en la ventana de la primera Y en la de la segunda,
+     * y sus ventas se descontarían dos veces. Aquí cada día consume una sola vez.
      *
      * Sólo cambia `pendiente`: `asignado`, `exceso` y la barra siguen con la
      * cuenta de olas de siempre.
      */
-    const hoy = hoyEnCuba();
-    const olaVigente = filas[filas.length - 1];
-    let stockViejo = 0;
-    for (let i = 0; i < filas.length - 1; i++) {
-      let consumido = 0;
-      // El stock viejo se mide AL EMPEZAR el día de la ola nueva: la era de la ola
-      // anterior se corta antes de ese día, y lo que se factura desde la ola nueva
-      // consume primero ese stock y luego la ola nueva.
-      for (const [dia, cantidad] of Object.entries(despachosDia)) {
-        if (dia >= filas[i].fecha && dia <= filas[i + 1].fecha && dia < olaVigente.fecha) {
-          consumido += cantidad;
-        }
+    const cola = [];
+    let o = 0;
+    for (const dia of Object.keys(despachosDia).sort()) {
+      if (dia > hoy) continue;
+      while (o < filas.length && filas[o].fecha <= dia) cola.push(filas[o++].cantidad);
+      let resto = despachosDia[dia];
+      while (resto > 0 && cola.length > 0) {
+        const toma = Math.min(resto, cola[0]);
+        cola[0] -= toma;
+        resto -= toma;
+        if (cola[0] <= 0) cola.shift();
       }
-      stockViejo += Math.max(0, filas[i].cantidad - consumido);
     }
-    let facturadoDesdeLaOla = 0;
-    for (const [dia, cantidad] of Object.entries(despachosDia)) {
-      if (dia >= olaVigente.fecha && dia <= hoy) facturadoDesdeLaOla += cantidad;
-    }
-    pendientePorOla[key] = Math.max(
-      0,
-      olaVigente.cantidad - Math.max(0, facturadoDesdeLaOla - stockViejo),
-    );
+    // Olas que ningún día llegó a consumir (posteriores a hoy, o sin ventas): tal cual.
+    while (o < filas.length) cola.push(filas[o++].cantidad);
+    pendientePorOla[key] = cola.length > 0 ? cola[cola.length - 1] : 0;
   }
 
   /**
