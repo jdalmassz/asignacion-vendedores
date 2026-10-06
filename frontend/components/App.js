@@ -522,7 +522,10 @@ export default function App() {
         return true
       })
     }
-    return ventas.filter((v) => v.fecha && v.fecha.startsWith('2026-09'))
+    // El mes EN CURSO, no uno escrito a mano: había un `startsWith('2026-09')` y en
+    // octubre el filtro «Mes» devolvía cero filas, con la pantalla de Ventas en blanco.
+    const mes = (fechaHoy || hoyEnCuba()).slice(0, 7)
+    return ventas.filter((v) => v.fecha && v.fecha.startsWith(mes))
   }, [ventas, filtroPreset, fechaHoy, filtroFechaDesde, filtroFechaHasta])
 
   // Agrupar ventas por vendedor filtradas por fecha
