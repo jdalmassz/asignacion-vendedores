@@ -43,7 +43,8 @@ export function nombreDelMes(mes) {
 /**
  * Las iniciales del vendedor: la primera del nombre y la primera del apellido.
  *
- * es justo lo contrario de lo que sirve una inicial.
+ * Con una sola letra, dos vendedores distintos daban el mismo círculo, que es justo lo
+ * contrario de lo que sirve una inicial.
  */
 export function inicialesDe(nombre) {
   const partes = String(nombre || '')
@@ -151,6 +152,8 @@ export function nombreCorto(nombre) {
 /**
  * Nombre y primer apellido.
  *
+ * "UN VENDEDOR CON NOMBRE MUY LARGO" no cabe en una lista de 250 px y se cortaba en
+ * "UN VENDEDOR CON NOM…", que es peor que no ponerlo: dos vendedores pueden compartir el
  * trozo visible. Con nombre y apellido se distinguen, y el completo queda en el
  * título y en la cabecera del detalle.
  */

@@ -811,6 +811,7 @@ async function computeResumen() {
    *
    * Pero con dos olas en días distintos la ventana cuenta dos veces. La de
    * MALTA: la ola del 23 corría hasta el 29 inclusive y ADEMÁS se sumaba la
+   * ola de 70 del 29, así que las ventas del 29 entraban dos veces. Un vendedor
    * ventana + 70): con el almacén vacío la pantalla seguía diciendo «le falta».
    * La ventana puede hasta PASAR lo que se le dio, y entonces la meta es
    * inalcanzable por definición.
