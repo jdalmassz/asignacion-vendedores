@@ -43,8 +43,8 @@ export function nombreDelMes(mes) {
 /**
  * Las iniciales del vendedor: la primera del nombre y la primera del apellido.
  *
- * Con una sola letra, ALEXANDER PADRON y ANDY ALMANZA tenían el mismo círculo, que
- * es justo lo contrario de lo que sirve una inicial.
+ * Con una sola letra, dos vendedores distintos daban el mismo círculo, que es justo lo
+ * contrario de lo que sirve una inicial.
  */
 export function inicialesDe(nombre) {
   const partes = String(nombre || '')
@@ -90,7 +90,7 @@ export function tramosDe(p) {
    * equivocada.
    *
    * `deMas` era `despachado + facturado + en proceso - asignado` y el rótulo decía
-   * "Salió más de lo que se le asignó". A MAYLEN le ponía "De más 35" cuando lo que
+   * "Salió más de lo que se le asignó". A un vendedor le ponía "De más 35" cuando lo que
    * había salido eran 180 de 180 clavados: esos 35 eran pedidos SIN despachar. Lo que
    * de verdad se pasó eran 22, y no se veía por ningún lado.
    *
@@ -155,8 +155,8 @@ export function nombreCorto(nombre) {
 /**
  * Nombre y primer apellido.
  *
- * "ERNESTO RODRIGUEZ CASTELLANOS" no cabe en una lista de 250 px y se cortaba en
- * "ERNESTO RODRI…", que es peor que no ponerlo: dos vendedores pueden compartir el
+ * "UN VENDEDOR CON NOMBRE MUY LARGO" no cabe en una lista de 250 px y se cortaba en
+ * "UN VENDEDOR CON NOM…", que es peor que no ponerlo: dos vendedores pueden compartir el
  * trozo visible. Con nombre y apellido se distinguen, y el completo queda en el
  * título y en la cabecera del detalle.
  */

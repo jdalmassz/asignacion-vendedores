@@ -668,8 +668,8 @@ app.get('/api/ventas', async (req, res) => {
  *                   692, se facturaron 852.
  *   - `cambiadoMap` de lo facturado, cuánto salió de un pedido marcado `cambiado`.
  *   - `sinPedidoMap` lo que Ventra facturó y PEDIDO no tiene: folio desconocido, o
- *                   factura sin `P-` en la nota. Este mes, 147 packs de ALEXANDER, 40
- *                   de DEYANIRA y 464 de vodka de IRADIEL.
+  *                   factura sin `P-` en la nota. Este mes, 147 packs de un producto,
+  *                   40 de otro y 464 de vodka de un tercero.
  *
  * Los tres son subconjuntos o comparaciones de lo de Ventra; ninguno lo sustituye.
  */
@@ -815,7 +815,7 @@ async function computeResumen() {
    *
    * Pero con dos olas en días distintos la ventana cuenta dos veces. La de
    * MALTA: la ola del 23 corría hasta el 29 inclusive y ADEMÁS se sumaba la
-   * ola de 70 del 29, así que las ventas del 29 entraban dos veces. ANDY
+   * ola de 70 del 29, así que las ventas del 29 entraban dos veces. Un vendedor
    * recibió 1275+70 = 1345, los vendió todos y su meta salía 1415 (1345 de
    * ventana + 70): con el almacén vacío la pantalla seguía diciendo «le falta».
    * La ventana puede hasta PASAR lo que se le dio, y entonces la meta es
@@ -828,7 +828,7 @@ async function computeResumen() {
    *     pendiente = max(0, asignado − completada)
    *
    * 100% ⟺ pendiente 0 ⟺ no le queda nada. En parranda la meta deja de ser
-   * 1824 uniforme: GEORLIS recibió 912+842 = 1754, y si vendió 1824 esos 70
+   * 1824 uniforme: un vendedor recibió 912+842 = 1754, y si vendió 1824 esos 70
    * son un exceso de verdad, que antes la ventana disfrazaba de meta cumplida.
    */
   const asignMap = {};
@@ -851,8 +851,8 @@ async function computeResumen() {
      *
      * Ahora la cuenta es de cola: los días en orden consumen primero la ola más
      * vieja que aún tenga stock, y lo que queda AL FINAL de la cola es lo que le
-     * falta al vendedor —su pendiente. GEORLIS cerró sus 1275 del 23 y el 29
-     * facturó 70: le queda 0. JEAN le quedaban 347 del 23 y facturó 340: esos
+     * falta al vendedor —su pendiente. Uno cerró sus 1275 del 23 y el 29
+     * facturó 70: le queda 0. A otro le quedaban 347 del 23 y facturó 340: esos
      * 340 salieron de stock viejo y su ola de 70 sigue entera.
      *
      * Una sola pasada y sin repartir la cuenta por olas: con tres olas, el día
@@ -944,7 +944,7 @@ async function computeResumen() {
      * cerrado: no va a salir solo, nadie lo está preparando. Contarlo como "en proceso"
      * dice que hay trabajo en marcha donde lo que hay es un agujero.
      *
-     * ALEXANDER tenía 242 "en proceso" de PARRANDA y 122 de esos eran cuatro pedidos
+     * Un vendedor tenía 242 "en proceso" de PARRANDA y 122 de esos eran cuatro pedidos
      * del 9 de septiembre ya cerrados, comprobados el día 10 y sin factura. Este mes son
      * 30 pedidos y 627 packs de los dos productos asignados.
      */
@@ -970,10 +970,10 @@ async function computeResumen() {
    * `completada` YA NO SE TOPA al asignado.
    *
    * Estaba escrito `Math.min(despachado, asignado)`, así que despachar de más era
-   * invisible: MAYLEN REMON DIAZ sacó 202 de VODKA REGIO contra 180 asignados y la
+   * invisible: un vendedor sacó 202 de VODKA REGIO contra 180 asignados y la
    * pantalla ponía 180, sin rastro de los 22 de diferencia. Y no era un caso suelto:
-   * pasaba en 4 de las 14 filas del mes y escondía 127 unidades —GEORLIS 982 contra
-   * 912, ANDY 933, ERNESTO 926—.
+   * pasaba en 4 de las 14 filas del mes y escondía 127 unidades de tres vendedores
+   * (982, 933 y 926 unidades).
    *
    * Pasarse de lo asignado es justo lo que hay que ver, no lo que hay que recortar.
    * Ahora va el número real y aparte `exceso`, que es cuánto se pasó.
