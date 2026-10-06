@@ -1365,7 +1365,7 @@ export default function App() {
                                           {diferencia}
                                         </span>
                                       ) : (
-                                        <span className="cotejo-igual">clavado</span>
+                                        <span className="cotejo-igual">exacto</span>
                                       )}
                                     </p>
                                   ) : null}
