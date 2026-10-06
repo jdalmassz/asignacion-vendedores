@@ -5,3 +5,5 @@ out/
 .env
 *.xlsx
 *.log
+backend/asignaciones.json
+backend/cobros.json
