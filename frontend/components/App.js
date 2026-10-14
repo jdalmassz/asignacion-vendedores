@@ -115,6 +115,16 @@ export default function App() {
   const enviandoRef = useRef(false)
 
   const [cargandoAlmacen, setCargandoAlmacen] = useState(false)
+
+  /**
+   * La corrección del precio de un producto, en la tabla del almacén.
+   *
+   * El precio sale de la última venta, así que, en cuanto cambia la tarifa y todavía no
+   * app y manda a partir de ese momento; la fuente externa no se toca.
+   */
+  const [editandoPrecio, setEditandoPrecio] = useState(null)
+  const [precioEditado, setPrecioEditado] = useState('')
+  const [guardandoPrecio, setGuardandoPrecio] = useState(false)
   const [actualizado, setActualizado] = useState(null)
   const [ahora, setAhora] = useState(Date.now())
 
@@ -190,6 +200,62 @@ export default function App() {
       setCargandoAlmacen(false)
     }
   }, [])
+
+  /** Pone la celda del precio en edición, con el número que se está enseñando. */
+  function editarPrecio(producto) {
+    if (guardandoPrecio) return
+    setEditandoPrecio(producto.producto_id)
+    setPrecioEditado(String(producto.precio || ''))
+  }
+
+  /**
+   * Guarda la corrección.
+   *
+   * Va a la API de ESTA app, que la guarda en su propia base: ni Ventra, ni PEDIDO, ni
+   * MariaDB se enteran. A partir de ese momento el almacén enseña este precio en vez del
+   * de la última venta, y la celda lo marca como corregido con su fecha.
+   */
+  async function guardarPrecioCorregido(e) {
+    e.preventDefault()
+    const codigo = editandoPrecio
+    const n = Number(String(precioEditado).replace(',', '.'))
+    if (!codigo || guardandoPrecio) return
+
+    if (!Number.isFinite(n) || n <= 0) {
+      avisar('error', 'Precio no válido', 'Escribe un número mayor que cero.')
+      return
+    }
+
+    setGuardandoPrecio(true)
+    try {
+      await axios.put(`${API_URL}/precios`, { codigo, precio: n })
+      setEditandoPrecio(null)
+      await cargarAlmacen()
+      avisar('ok', 'Precio corregido', `${codigo} pasa a $${n.toFixed(2)}.`)
+    } catch (err) {
+      avisar('error', 'No se pudo guardar el precio', err.response?.data?.error || err.message)
+    } finally {
+      setGuardandoPrecio(false)
+    }
+  }
+
+  /** Quita la corrección: el producto vuelve al precio de su última venta. */
+  async function quitarCorreccionPrecio() {
+    const codigo = editandoPrecio
+    if (!codigo || guardandoPrecio) return
+
+    setGuardandoPrecio(true)
+    try {
+      await axios.delete(`${API_URL}/precios/${encodeURIComponent(codigo)}`)
+      setEditandoPrecio(null)
+      await cargarAlmacen()
+      avisar('ok', 'Corrección quitada', `${codigo} vuelve al precio de su última venta.`)
+    } catch (err) {
+      avisar('error', 'No se pudo quitar la corrección', err.response?.data?.error || err.message)
+    } finally {
+      setGuardandoPrecio(false)
+    }
+  }
 
   const cargarResumen = useCallback(async () => {
     try {
@@ -691,6 +757,8 @@ export default function App() {
             // la columna volvía a no poder distinguir un precio de hoy de uno de 2025.
             precio_fecha: p.precio_fecha || null,
             precio_viejo: !!p.precio_viejo,
+            // Corregido a mano y no sacado de una venta: la celda lo dice aparte.
+            precio_corregido: !!p.precio_corregido,
             stock: 0,
             porAlmacen: {},
           }
@@ -1619,22 +1687,87 @@ export default function App() {
                             vez de esconder el número: saber que el KAPITAL INDUSTRIAL se vendió a
                             18 en febrero de 2025 es más útil que un "sin precio" que se lee como
                             que no vale nada.
+
+                            La celda es editable: en cuanto cambia la tarifa, el precio de la
+                            última venta queda viejo hasta que se venda algo al precio nuevo —el
+                            Lo guardado manda a partir de ese momento y se dice que está
+                            corregido, con su fecha, para no confundirlo con una venta. Ver
+                            `precios.js`.
                           */}
-                          <td className={`text-right${!item.precio ? ' sin-precio' : ''}`}>
-                            {item.precio ? (
-                              <>
-                                ${item.precio.toFixed(2)}
-                                {item.precio_viejo ? (
-                                  <span
-                                    className="precio-viejo"
-                                    title={`Último precio conocido, de una venta del ${item.precio_fecha}`}
+                          <td className={`text-right precio-celda${!item.precio ? ' sin-precio' : ''}`}>
+                            {editandoPrecio === item.producto_id ? (
+                              <form className="precio-form" onSubmit={guardarPrecioCorregido}>
+                                <input
+                                  className="precio-input"
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoFocus
+                                  aria-label={`Precio de ${item.nombre}`}
+                                  value={precioEditado}
+                                  onChange={(e) => setPrecioEditado(e.target.value)}
+                                />
+                                <button
+                                  type="submit"
+                                  className="precio-accion"
+                                  disabled={guardandoPrecio}
+                                  title="Guardar"
+                                  aria-label="Guardar precio"
+                                >
+                                  <AppIcon name="check" size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="precio-accion"
+                                  disabled={guardandoPrecio}
+                                  title="Cancelar"
+                                  aria-label="Cancelar"
+                                  onClick={() => setEditandoPrecio(null)}
+                                >
+                                  <AppIcon name="x" size={14} />
+                                </button>
+                                {item.precio_corregido ? (
+                                  <button
+                                    type="button"
+                                    className="precio-accion precio-quitar"
+                                    disabled={guardandoPrecio}
+                                    title="Volver al precio de la última venta"
+                                    aria-label="Quitar la corrección"
+                                    onClick={quitarCorreccionPrecio}
                                   >
-                                    {item.precio_fecha}
-                                  </span>
+                                    <AppIcon name="trash" size={14} />
+                                  </button>
                                 ) : null}
-                              </>
+                              </form>
                             ) : (
-                              <>nunca se ha vendido</>
+                              <button
+                                type="button"
+                                className="precio-editar"
+                                title="Corregir el precio a mano"
+                                onClick={() => editarPrecio(item)}
+                              >
+                                {item.precio ? (
+                                  <>
+                                    ${item.precio.toFixed(2)}
+                                    {item.precio_corregido ? (
+                                      <span
+                                        className="precio-corregido"
+                                        title={`Corregido a mano el ${item.precio_fecha}; manda sobre el de la última venta`}
+                                      >
+                                        corregido {item.precio_fecha}
+                                      </span>
+                                    ) : item.precio_viejo ? (
+                                      <span
+                                        className="precio-viejo"
+                                        title={`Último precio conocido, de una venta del ${item.precio_fecha}`}
+                                      >
+                                        {item.precio_fecha}
+                                      </span>
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  <>nunca se ha vendido</>
+                                )}
+                              </button>
                             )}
                           </td>
                           {/* El cero se apaga: en una tabla de diez almacenes, si todos los

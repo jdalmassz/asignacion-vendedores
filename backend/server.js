@@ -7,6 +7,7 @@ import {
   listarAsignaciones, mesesConAsignaciones, crearAsignacion, borrarAsignacion,
   listarCobros, marcarCobro, desmarcarCobro, cobrosManualesSet,
 } from './almacen.js';
+import { preciosCorregidos, corregirPrecio, borrarCorreccion } from './precios.js';
 
 const app = express();
 app.use(cors());
@@ -1027,21 +1028,37 @@ app.get('/api/resumen', async (req, res) => {
 // GET /api/almacen — desde MariaDB (store, inventario real)
 async function computeAlmacen() {
   return cached('almacen', 60 * 1000, async () => {
-    const rows = await ventra.almacen();
+    const [rows, corregidos] = await Promise.all([
+      ventra.almacen(),
+      // No rechaza nunca: si Mongo no está, se enseña el de la última venta, que es lo
+      // que había antes de las correcciones. Ver `precios.js`.
+      preciosCorregidos(),
+    ]);
 
     const almacenes = {};
     for (const r of rows) {
       if (!r.Name || !r.ID) continue;
       const nombre = r.almacen || ('Almacen ' + r.object_id);
       if (!almacenes[nombre]) almacenes[nombre] = { almacen: nombre, productos: [] };
+
+      /**
+       * La corrección a mano, si la hay, manda sobre el de la última venta.
+       *
+       * En cuanto cambia la tarifa y todavía no se ha vendido nada al precio nuevo —el
+       * enseñarlo como si fuera el de hoy es mentira. Con esto se pone el que manda y se
+       * marca como corrección, con su fecha, para que no se confunda con una venta.
+       */
+      const correccion = corregidos.get(String(r.Code || r.ID || '').trim().toUpperCase());
+
       almacenes[nombre].productos.push({
         producto_id: r.Code || r.ID,
         nombre: r.Name,
-        precio: r.PriceOut1 || 0,
+        precio: correccion ? correccion.precio : (r.PriceOut1 || 0),
         // De cuándo es ese precio. Ventra no guarda precio en la ficha del producto:
         // sale de la última venta, y puede ser de hace dos años. Ver `preciosRecientes`.
-        precio_fecha: r.precioFecha || null,
-        precio_viejo: !!r.precioViejo,
+        precio_fecha: correccion ? correccion.fecha : (r.precioFecha || null),
+        precio_viejo: correccion ? false : !!r.precioViejo,
+        precio_corregido: !!correccion,
         stock: r.stock
       });
     }
@@ -1066,6 +1083,70 @@ app.get('/api/almacen', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+/**
+ * Deja el almacén sin caché para que la próxima petición lo vuelva a calcular.
+ *
+ * Sin esto, una corrección recién guardada no se veía hasta dentro de un minuto, que es
+ * lo que tarda la caché en caducar —y quien la acaba de hacer la daría por perdida.
+ * `invalidate` recorre lo que hay EN MEMORIA; lo que esté sólo en Redis —la otra copia
+ * del backend— se borra aparte, que es para eso que está el prefijo.
+ */
+async function refrescarAlmacen() {
+  await invalidate('almacen');
+  enMemoria.delete('almacen');
+  await borrarCache(CACHE_PREFIX + 'almacen');
+}
+
+// GET /api/precios — las correcciones de precio guardadas a mano
+app.get('/api/precios', async (req, res) => {
+  try {
+    const mapa = await preciosCorregidos();
+    const correcciones = [...mapa.entries()].map(([codigo, c]) => ({ codigo, ...c }));
+
+    res.json({ correcciones });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /api/precios — corrige el precio vigente de un producto.
+ *
+ * Se guarda SÓLO en la MongoDB de esta app; Ventra, PEDIDO y MariaDB quedan intactas
+ * (sólo lectura). Mientras exista la corrección manda sobre el precio de la última venta
+ * —que es el que enseña el almacén—, y se marca con `precio_corregido` para que en
+ * pantalla se distinga de una venta. Ver `precios.js`.
+ */
+app.put('/api/precios', async (req, res, next) => {
+  try {
+    const { codigo, precio, motivo } = req.body || {};
+    const n = Number(precio);
+
+    if (!String(codigo || '').trim()) {
+      return res.status(400).json({ error: 'Falta el código del producto.' });
+    }
+    if (!Number.isFinite(n) || n <= 0) {
+      return res.status(400).json({ error: 'El precio tiene que ser un número mayor que cero.' });
+    }
+
+    const correccion = await corregirPrecio(codigo, n, motivo);
+    await refrescarAlmacen();
+    res.json({ correccion });
+  } catch (e) { next(e); }
+});
+
+// DELETE /api/precios/:codigo — quita la corrección y vuelve al precio de la última venta
+app.delete('/api/precios/:codigo', async (req, res, next) => {
+  try {
+    const quitado = await borrarCorreccion(req.params.codigo || '');
+
+    if (!quitado) return res.status(404).json({ error: 'No hay ninguna corrección para ese producto.' });
+
+    await refrescarAlmacen();
+    res.json({ success: true });
+  } catch (e) { next(e); }
 });
 
 // GET /api/clientes-por-vendedor — desde Procovar API

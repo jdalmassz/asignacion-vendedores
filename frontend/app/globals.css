@@ -776,6 +776,101 @@ body {
   font-style: italic;
 }
 
+/*
+ * El precio se corrige a mano desde la propia celda.
+ *
+ * El precio sale de la última venta, así que, en cuanto cambia la tarifa, enseña el
+ * viejo hasta que se venda algo al precio nuevo. Puliendo el número se arregla ahí mismo,
+ * y el botón tiene que parecer texto: si la columna se vuelve un control de verdad, la
+ * tabla deja de leerse de un vistazo.
+ */
+.precio-celda {
+  white-space: nowrap;
+}
+
+.precio-editar {
+  display: block;
+  width: 100%;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.precio-editar:hover,
+.precio-editar:focus-visible {
+  background: var(--bg);
+  outline: none;
+}
+
+/* Lo corregido a mano: no se hace pasar por el precio de una venta. */
+.precio-corregido {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Número y iconos, sin que la celda cambie de ancho ni la tabla se mueva. */
+.precio-form {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.precio-input {
+  width: 74px;
+  padding: 4px 6px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.precio-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.25);
+}
+
+.precio-accion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-light);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.precio-accion:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.precio-accion:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.precio-quitar:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .stock-cero {
   color: var(--text-light);
   font-weight: 400;

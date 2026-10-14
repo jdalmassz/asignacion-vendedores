@@ -1,5 +1,5 @@
 /**
- * Dónde se guardan las asignaciones y los cobros.
+ * Dónde se guardan las asignaciones, los cobros y las correcciones de precio.
  *
  * # Por qué esto y no los ficheros JSON
  *
@@ -10,7 +10,7 @@
  * que alguien empiece a usarlo en serio se lleva su trabajo por delante.
  *
  * MongoDB porque estos datos no tienen forma fija —una asignación de hoy puede llevar
- * mañana un campo más— y porque no hay relaciones que mantener: son dos listas.
+ * mañana un campo más— y porque no hay relaciones que mantener: son listas sueltas.
  *
  * # Las dos cosas que se arreglan de camino
  *
@@ -37,7 +37,7 @@ const FECHA_CUBA = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 });
 
-const hoyEnCuba = () => FECHA_CUBA.format(new Date());
+export const hoyEnCuba = () => FECHA_CUBA.format(new Date());
 
 const URI = process.env.MONGO_URL || 'mongodb://localhost:27017';
 const NOMBRE_BASE = process.env.MONGO_DB || 'asignacion_vendedores';
@@ -50,8 +50,12 @@ let base = null;
  *
  * El driver de Mongo ya trae su propio pool y reconecta solo, así que abrir una por
  * petición sería pagar el saludo cada vez para nada.
+ *
+ * La comparte `precios.js`, que guarda en esta misma base las correcciones de precio a
+ * mano: los datos de LA app tienen una sola conexión, y las fuentes externas —Ventra,
+ * PEDIDO, MariaDB— siguen quedándose sólo con lectura.
  */
-async function db() {
+export async function db() {
   if (base) return base;
 
   cliente = new MongoClient(URI, { serverSelectionTimeoutMS: 5000 });
