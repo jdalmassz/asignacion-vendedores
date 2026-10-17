@@ -5,8 +5,9 @@
  *
  * El precio vigente que enseña la app sale de la **última venta**, porque Ventra no
  * publica el precio en la ficha del producto (ver `ventra.js`). Eso sirve mientras la
- * tarifa no cambie, y falla justo en el instante en que cambia:
- *
+ * tarifa no cambie, y falla justo en el instante en que cambia: si el catálogo sube o
+ * baja y aún no se ha vendido una unidad al precio nuevo, la pantalla sigue
+ * enseñando el de la última venta anterior al cambio.
  *
  * Aquí se guarda la corrección de un producto. Mientras exista, manda sobre el precio de
  * la última venta, y en pantalla se dice que está corregida y de qué fecha —se distingue

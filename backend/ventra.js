@@ -80,7 +80,9 @@ async function pedir(ruta, ms = 30000) {
  *
  *   - **90 días**: el precio vigente. Es el que vale.
  *   - **3 años**: sólo para los que no aparecen en los 90 días. Un producto que no se
- *     vende desde hace año y medio salía como «sin precio», que se lee como que no
+ *     vende desde hace mucho salía como «sin precio», que se lee como que no tiene
+ *     ninguno. Y sí lo tiene: el de su última venta hace tiempo. Enseñar ese número
+ *     diciendo de cuándo es sirve; esconderlo, no.
  *
  * Devuelve `Map<codigo, { precio, fecha, viejo }>`.
  */

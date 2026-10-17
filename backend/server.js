@@ -665,9 +665,11 @@ app.get('/api/ventas', async (req, res) => {
  * puede decir, y las dos se calculan cruzando por el folio de la nota (`P-...`):
  *
  *   - `pedidoMap`   lo que PIDIÓ el cliente, que sale del campo `pedido` de cada línea
- *                   de `lineasFactura`. Es el otro lado de la comparación: se pidieron
+ *                   de `lineasFactura`. Es el otro lado de la comparación: lo pedido
+ *                   frente a lo facturado.
  *   - `cambiadoMap` de lo facturado, cuánto salió de un pedido marcado `cambiado`.
  *   - `sinPedidoMap` lo que Ventra facturó y PEDIDO no tiene: folio desconocido, o
+ *                   factura sin `P-` en la nota.
  *
  * Los tres son subconjuntos o comparaciones de lo de Ventra; ninguno lo sustituye.
  */
@@ -805,26 +807,20 @@ async function computeResumen() {
   /*
    * ASIGNADO = LO QUE SE LE DIO EN TOTAL: la suma de las cantidades de ola.
    *
-   * Antes era una ventana: cada ola contaba lo despachado DENTRO DE SU LAPSO
-   * —desde que nació hasta que nació la siguiente, con el día final incluido—
-   * y la última entraba completa. Eso se diseñó para ECUALIZAR la parranda: lo
-   * que cada uno vendió en la primera más la segunda ola daba la misma meta
-   *
-   * Pero con dos olas en días distintos la ventana cuenta dos veces. La de
-   * MALTA: la ola del 23 corría hasta el 29 inclusive y ADEMÁS se sumaba la
-   * ola de 70 del 29, así que las ventas del 29 entraban dos veces. Un vendedor
-   * ventana + 70): con el almacén vacío la pantalla seguía diciendo «le falta».
-   * La ventana puede hasta PASAR lo que se le dio, y entonces la meta es
+   * Antes cada ola contaba lo despachado sólo dentro de su propia ventana de
+   * tiempo, lo que hacía que un mismo despacho pudiera contarse dos veces cuando
+   * las olas caían en días distintos, y que la meta resultante fuera a veces
    * inalcanzable por definición.
    *
    * La suma de cantidades es lo físicamente asignado, y con el pendiente de
    * cola (bloque de abajo) se cumple la identidad que la pantalla promete en
-   * TODAS las filas —comprobado que nadie vende antes de su primera ola—:
+   * TODAS las filas:
    *
    *     pendiente = max(0, asignado − completada)
    *
    * 100% ⟺ pendiente 0 ⟺ no le queda nada. En parranda la meta deja de ser
-   * son un exceso de verdad, que antes la ventana disfrazaba de meta cumplida.
+   * uniforme: si se recibió en dos olas y se vendió todo, el exceso es real,
+   * no una meta cumplida.
    */
   const asignMap = {};
   /** El pendiente de la ola vigente, calculado aparte. Ver el bloque de abajo. */
@@ -841,11 +837,15 @@ async function computeResumen() {
      *
      * Con la ventana vieja, las ventas del día que nace una ola se las llevaba
      * la ventana de la anterior —inclusiva por el final a propósito—, así que
-     * el 29 al mediodía los siete de MALTA 330 enseñaban «Pendiente 70» aunque
-     * cuatro ya habían facturado sus 70.
+     * un vendedor con despachos facturados ese mismo día seguía enseñando
+     * «Pendiente» de esa ola aunque ya la hubiera cerrado.
      *
      * Ahora la cuenta es de cola: los días en orden consumen primero la ola más
      * vieja que aún tenga stock, y lo que queda AL FINAL de la cola es lo que le
+     * falta al vendedor —su pendiente. Quien cierra su ola entera el mismo día
+     * que nace la siguiente queda con pendiente 0; a quien le quedaba stock de
+     * una ola anterior, esos despachos salen de lo viejo y la ola nueva sigue
+     * entera.
      *
      * Una sola pasada y sin repartir la cuenta por olas: con tres olas, el día
      * que nace la segunda caería en la ventana de la primera Y en la de la
@@ -936,7 +936,8 @@ async function computeResumen() {
      * cerrado: no va a salir solo, nadie lo está preparando. Contarlo como "en proceso"
      * dice que hay trabajo en marcha donde lo que hay es un agujero.
      *
-     * del 9 de septiembre ya cerrados, comprobados el día 10 y sin factura. Este mes son
+     * Se comprobó en producción que pedidos cerrados hace días sin factura
+     * aparecían como "en proceso", inflando la cifra.
      */
     const cerradoSinFactura = o.estado === 'completada';
 
@@ -960,7 +961,9 @@ async function computeResumen() {
    * `completada` YA NO SE TOPA al asignado.
    *
    * Estaba escrito `Math.min(despachado, asignado)`, así que despachar de más era
-   * pantalla ponía 180, sin rastro de los 22 de diferencia. Y no era un caso suelto:
+   * invisible: la pantalla mostraba el asignado sin rastro de la diferencia. Y no
+   * era un caso suelto: pasaba en varias filas del mes y escondía unidades de
+   * varios vendedores.
    *
    * Pasarse de lo asignado es justo lo que hay que ver, no lo que hay que recortar.
    * Ahora va el número real y aparte `exceso`, que es cuánto se pasó.
@@ -1041,13 +1044,14 @@ async function computeAlmacen() {
       const nombre = r.almacen || ('Almacen ' + r.object_id);
       if (!almacenes[nombre]) almacenes[nombre] = { almacen: nombre, productos: [] };
 
-      /**
-       * La corrección a mano, si la hay, manda sobre el de la última venta.
-       *
-       * En cuanto cambia la tarifa y todavía no se ha vendido nada al precio nuevo —el
-       * enseñarlo como si fuera el de hoy es mentira. Con esto se pone el que manda y se
-       * marca como corrección, con su fecha, para que no se confunda con una venta.
-       */
+       /**
+        * La corrección a mano, si la hay, manda sobre el de la última venta.
+        *
+        * En cuanto cambia la tarifa y todavía no se ha vendido nada al precio nuevo,
+        * el precio de la última venta está viejo y enseñarlo como si fuera el de hoy
+        * es mentira. Con esto se pone el que manda y se marca como corrección, con su
+        * fecha, para que no se confunda con una venta.
+        */
       const correccion = corregidos.get(String(r.Code || r.ID || '').trim().toUpperCase());
 
       almacenes[nombre].productos.push({
